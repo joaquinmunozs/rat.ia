@@ -376,6 +376,9 @@ def main():
         print("Falta CANALES_ORIGEN (usernames o IDs separados por coma)")
         return 1
 
+    print("[hector2-debug] SESION_DIR=%r SESION=%r existe=%s tamano=%s" % (
+        SESION_DIR, SESION, os.path.exists(SESION),
+        os.path.getsize(SESION) if os.path.exists(SESION) else None))
     client = TelegramClient(SESION, int(api_id), api_hash)
 
     if a.login:
