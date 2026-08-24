@@ -119,9 +119,11 @@ porqué de cada señal.
 """
 import argparse
 import asyncio
+import base64
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 import urllib.error
@@ -217,13 +219,64 @@ async def _tarea_ajustar_ritmos(intervalo=3600):
 # producción) disparó un rebuild sin el .session, y el proceso quedó en
 # crash-loop pidiendo login interactivo (`EOFError: EOF when reading a
 # line`) porque el contenedor no tiene terminal. Se recuperó una copia local
-# vieja del archivo (20-ago) y se subió a un volumen persistente en /data
-# (`railway volume add --mount-path /data`). Con `HECTOR2_SESION_DIR=/data`
-# configurado en Railway, la sesión sobrevive a cualquier deploy futuro,
-# venga de git o de una subida local -- ya no depende de que el archivo
-# esté empaquetado en la imagen.
+# vieja del archivo (20-ago).
+#
+# `railway volume files upload` PARECE funcionar pero corrompe binarios: subió
+# un .session de 36.864 bytes y el archivo que quedó en el volumen medía
+# 28.672 -- verificado comparando checksums, dos veces, con --overwrite de por
+# medio. No se investigó la causa exacta (¿el CLI, la capa MSYS de Git Bash en
+# Windows?) porque hay un camino que sí es verificable byte a byte: guardarlo
+# en variables de entorno (texto, sin ambigüedad de modo binario/texto) y que
+# el propio proceso lo escriba a disco al arrancar. Verificado con sha256
+# antes de confiar en esto.
 SESION_DIR = os.environ.get("HECTOR2_SESION_DIR") or os.path.dirname(os.path.abspath(__file__))
 SESION = os.path.join(SESION_DIR, "reenvio.session")
+
+
+def _sesion_valida(ruta):
+    """¿Hay ya una sesión utilizable en `ruta`? No compara contra ningún
+    snapshot -- Telethon SÍ reescribe partes del archivo en operación normal
+    (entidades, estado de updates), así que comparar checksums marcaría como
+    "corrupta" una sesión que en realidad solo envejeció. Lo único que
+    importa es que tenga una fila con auth_key en `sessions`."""
+    if not os.path.exists(ruta):
+        return False
+    try:
+        con = sqlite3.connect(ruta, timeout=5)
+        fila = con.execute("SELECT auth_key FROM sessions LIMIT 1").fetchone()
+        con.close()
+        return bool(fila and fila[0])
+    except Exception:                                         # noqa: BLE001
+        return False
+
+
+def _bootstrap_sesion_desde_env():
+    """Reconstruye reenvio.session desde HECTOR2_SESION_B64_1, _2, ... si
+    hace falta. Solo escribe si `_sesion_valida(SESION)` es False -- una vez
+    que hay una sesión real en el volumen, esto no vuelve a tocarla nunca
+    (ver el docstring de _sesion_valida)."""
+    if _sesion_valida(SESION):
+        return
+    partes = []
+    i = 1
+    while True:
+        v = os.environ.get("HECTOR2_SESION_B64_%d" % i)
+        if not v:
+            break
+        partes.append(v)
+        i += 1
+    if not partes:
+        return
+    try:
+        datos = base64.b64decode("".join(partes))
+        os.makedirs(SESION_DIR, exist_ok=True)
+        with open(SESION, "wb") as f:
+            f.write(datos)
+        print("[hector2] sesion reconstruida desde variables de entorno "
+              "(%d bytes, %d parte(s)) -- valida: %s"
+              % (len(datos), len(partes), _sesion_valida(SESION)))
+    except Exception as e:                                    # noqa: BLE001
+        print("[hector2] no se pudo reconstruir la sesion desde env: %s" % str(e)[:150])
 
 # Lo que el mensaje original trae para "loguearte"/unirte a MÁS canales del
 # aliado — no tiene sentido en el mensaje reenviado, y es justo el tipo de
@@ -376,9 +429,7 @@ def main():
         print("Falta CANALES_ORIGEN (usernames o IDs separados por coma)")
         return 1
 
-    print("[hector2-debug] SESION_DIR=%r SESION=%r existe=%s tamano=%s" % (
-        SESION_DIR, SESION, os.path.exists(SESION),
-        os.path.getsize(SESION) if os.path.exists(SESION) else None))
+    _bootstrap_sesion_desde_env()
     client = TelegramClient(SESION, int(api_id), api_hash)
 
     if a.login:
