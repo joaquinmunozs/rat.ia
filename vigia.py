@@ -447,6 +447,7 @@ def barrida(con, avisar=True, limite=None, segundos_max=None, notificador=None,
     print("  (%d hilos repartidos entre %d tiendas)\n" % (len(hilos), len(por_tienda)))
 
     hallazgos, leidos, fallas, muertas, procesados = [], 0, 0, 0, 0
+    diag_rechazos = {}  # ver baseprecios.evaluar param `diag` — mismo motivo que vigilante.py
     descartadas = 0
     # Los rechazos van aparte de `fallas` a propósito: no acercan la URL a que
     # la borren, pero tienen que VERSE. Un rechazo que no se cuenta es un
@@ -504,7 +505,8 @@ def barrida(con, avisar=True, limite=None, segundos_max=None, notificador=None,
             # clasificar el producto y los tópicos de Electrónicos y Hogar
             # se quedan sin nada entre 35% y 50%.
             det = (baseprecios.evaluar(con, url, precio,
-                                       nombre=d["nombre"], tienda=tienda)
+                                       nombre=d["nombre"], tienda=tienda,
+                                       diag=diag_rechazos)
                    if d.get("hay_stock", True) else None)
             baseprecios.guardar(con, tienda, url, d["nombre"], precio,
                                 imagen=d.get("imagen"))
@@ -541,6 +543,11 @@ def barrida(con, avisar=True, limite=None, segundos_max=None, notificador=None,
     print("\nleídos: %d · sin precio: %d · rechazos: %d · muertas: %d · "
           "hallazgos: %d  [%.1f min]"
           % (leidos, fallas, rechazos, muertas, len(hallazgos), dur / 60))
+    if diag_rechazos:
+        total_evaluados = sum(diag_rechazos.values())
+        print("   por qué NO fue hallazgo (%d evaluados):" % total_evaluados)
+        for motivo, n in sorted(diag_rechazos.items(), key=lambda x: -x[1]):
+            print("      %-28s %6d  (%.0f%%)" % (motivo, n, 100.0 * n / total_evaluados))
     if descartadas:
         print("   descartadas del catálogo: %d (por no traer precio, no por "
               "rechazo)" % descartadas)
