@@ -206,7 +206,24 @@ async def _tarea_ajustar_ritmos(intervalo=3600):
         except Exception as e:                                # noqa: BLE001
             print("[hector2] fallo ajustando ritmos: %s" % str(e)[:150])
 
-SESION = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reenvio.session")
+# EL ARCHIVO .session ES LA CONTRASEÑA DE LA CUENTA DE TELEGRAM DEL ALIADO
+# (23-ago-2026). No va al repo (ver .gitignore), así que cada deploy nuevo
+# levanta un contenedor sin él -- y este servicio corre en Railway SIN un
+# volumen persistente por defecto, así que "cada deploy nuevo" incluía
+# literalmente cada redeploy del código, no solo el primero.
+#
+# EL INCIDENTE (23-ago-2026): reconectar este servicio de Railway del repo
+# privado archivado al público (para que los cambios de código llegaran a
+# producción) disparó un rebuild sin el .session, y el proceso quedó en
+# crash-loop pidiendo login interactivo (`EOFError: EOF when reading a
+# line`) porque el contenedor no tiene terminal. Se recuperó una copia local
+# vieja del archivo (20-ago) y se subió a un volumen persistente en /data
+# (`railway volume add --mount-path /data`). Con `HECTOR2_SESION_DIR=/data`
+# configurado en Railway, la sesión sobrevive a cualquier deploy futuro,
+# venga de git o de una subida local -- ya no depende de que el archivo
+# esté empaquetado en la imagen.
+SESION_DIR = os.environ.get("HECTOR2_SESION_DIR") or os.path.dirname(os.path.abspath(__file__))
+SESION = os.path.join(SESION_DIR, "reenvio.session")
 
 # Lo que el mensaje original trae para "loguearte"/unirte a MÁS canales del
 # aliado — no tiene sentido en el mensaje reenviado, y es justo el tipo de
