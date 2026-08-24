@@ -1069,6 +1069,11 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None, notificador=None,
                 for p in plan.values())
     leidos, hallazgos, inicio = 0, 0, time.time()
     ultimo_precio = {}
+    # Contador por motivo de rechazo (ver baseprecios.evaluar, param `diag`).
+    # Nace del apagon del 23-ago-2026: el vigilante paso de encontrar cosas a
+    # encontrar cero por mas de un dia y nadie sabia POR QUE sin reconstruir
+    # una corrida real a mano. Esto lo dice solo, la proxima vez.
+    diag_rechazos = {}
     try:
         while True:
             try:
@@ -1098,7 +1103,8 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None, notificador=None,
             # nombre y tienda: hacen falta para clasificar en Electrónicos u
             # Hogar, que es lo que habilita el piso del 35%.
             det = (baseprecios.evaluar(con, url, precio,
-                                       nombre=d["nombre"], tienda=tienda)
+                                       nombre=d["nombre"], tienda=tienda,
+                                       diag=diag_rechazos)
                    if d.get("hay_stock", True) else None)
             baseprecios.guardar(con, tienda, url, d["nombre"], precio,
                                 imagen=d.get("imagen"))
@@ -1172,6 +1178,11 @@ def correr(con, avisar=True, ciclos=None, segundos_max=None, notificador=None,
     dur = max(1, time.time() - inicio)
     print("\nleídos: %d (%.1f/seg) · cambios: %d · hallazgos: %d · %.0f seg"
           % (leidos, leidos / dur, len(ultimo_precio), hallazgos, dur))
+    if diag_rechazos:
+        total_evaluados = sum(diag_rechazos.values())
+        print("   por qué NO fue hallazgo (%d evaluados):" % total_evaluados)
+        for motivo, n in sorted(diag_rechazos.items(), key=lambda x: -x[1]):
+            print("      %-28s %6d  (%.0f%%)" % (motivo, n, 100.0 * n / total_evaluados))
 
     # El contraste que faltaba: lo PRESUPUESTADO contra lo REALMENTE hecho.
     # Mientras el log solo imprimía la vuelta teórica (cupo ÷ ritmo), un

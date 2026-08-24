@@ -454,7 +454,7 @@ def _ya_se_dijo(con, url, precio_actual):
     return bool(f and f["piso"] is not None and precio_actual >= f["piso"])
 
 
-def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
+def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None, diag=None):
     """Clasifica el precio de hoy. Devuelve el detalle o None.
 
     Llamar SIEMPRE antes de guardar el precio nuevo: si no, el precio de hoy
@@ -463,7 +463,20 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
     `nombre` y `tienda` son opcionales pero conviene pasarlos: sin ellos no
     se puede clasificar el producto y el piso se queda en el 50% de siempre,
     o sea los tópicos de Electrónicos y Hogar no reciben nada entre 35% y 50%.
-    """
+
+    `diag` (23-ago-2026): dict opcional donde se acumula un contador por cada
+    motivo de rechazo, si se pasa uno. No cambia ningún resultado -- existe
+    porque el 23-ago el vigilante paso de encontrar cosas a encontrar CERO
+    durante mas de un dia sin que nadie supiera POR QUE de las corridas
+    reales (una base descargada no alcanza para reconstruirlo: ver
+    BITACORA-vigilante-en-cero si existe, o preguntarle a Joaquin). La
+    proxima vez que esto pase, `vigilante.py` puede imprimir este contador al
+    final de la corrida y decir la causa real, no una hipotesis."""
+    def _marcar(motivo):
+        if diag is not None:
+            diag[motivo] = diag.get(motivo, 0) + 1
+        return None
+
     ahora = int(ahora or time.time())
     ts = tramos(con, url, ahora=ahora)
     previos = [p for p, _, _ in ts]
@@ -521,7 +534,7 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
         con_historial = False
 
     if not referencia or referencia <= 0:
-        return None
+        return _marcar("sin_referencia")
 
     caida = 1 - (precio_actual / referencia)
 
@@ -542,7 +555,7 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
     else:
         piso = UMBRAL_OFERTA
     if caida < piso:
-        return None
+        return _marcar("bajo_piso")
 
     # El ahorro en pesos, no el precio del producto. Ver AHORRO_MINIMO.
     #
@@ -560,7 +573,7 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
     # donde sí importa cuánto se ahorra el suscriptor — un error no es una
     # oferta, es la tienda equivocándose.
     if caida < UMBRAL_ERROR and (referencia - precio_actual) < AHORRO_MINIMO:
-        return None
+        return _marcar("bajo_ahorro_minimo")
 
     # UNA OFERTA SIN HISTORIAL NO SE AVISA (11-ago-2026)
     #
@@ -575,7 +588,7 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
     # caído de verdad. Y el error dura minutos — esperar historial sería llegar
     # tarde siempre, que es lo mismo que no avisar.
     if not con_historial and caida < UMBRAL_ERROR:
-        return None
+        return _marcar("sin_historial_no_es_error")
 
     # Con historial, además tiene que ser el más barato jamás visto: si ya
     # estuvo así antes, es una oferta que se repite, no un hallazgo.
@@ -585,16 +598,16 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
     # escrito igual: es la regla de negocio, y si mañana alguien vuelve a
     # cambiar la referencia, esto tiene que seguir siendo cierto.
     if con_historial and previos and precio_actual >= min(previos):
-        return None
+        return _marcar("no_es_el_minimo")
 
     if _aviso_reciente(con, url, ahora):
-        return None
+        return _marcar("aviso_reciente")
 
     # Y aunque hayan pasado las 12 h: si ya lo dijimos a este precio y sigue
     # sin corregirse, repetirlo sólo enseña al suscriptor a silenciar el
     # tópico. Ver `_ya_se_dijo`.
     if _ya_se_dijo(con, url, precio_actual):
-        return None
+        return _marcar("ya_se_dijo")
 
     if caida >= UMBRAL_ERROR:
         tipo = ERROR
@@ -602,6 +615,9 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None):
         tipo = OFERTA
     else:
         tipo = CATEGORIA
+
+    if diag is not None:
+        diag["confirmado"] = diag.get("confirmado", 0) + 1
 
     return {
         "url": url,
