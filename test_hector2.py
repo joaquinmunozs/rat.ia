@@ -194,6 +194,47 @@ class TestEvaluarMensaje(unittest.TestCase):
 
 # ── hector2_db ──────────────────────────────────────────────────────────
 
+class TestUsoDesdeOtroHilo(unittest.TestCase):
+    """Regresión del bug real del 23-ago: evaluar_mensaje corre dentro de
+    asyncio.to_thread, así que las conexiones se abren en un hilo y se usan
+    en otro. sqlite3 lo rechaza salvo check_same_thread=False."""
+
+    def test_con_hector_se_puede_usar_desde_otro_hilo(self):
+        tmp = tempfile.mktemp(suffix=".db")
+        con_setup = sqlite3.connect(tmp)
+        con_setup.executescript(baseprecios.ESQUEMA)
+        con_setup.close()
+        con = f.abrir_solo_lectura(tmp)
+        try:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as ex:
+                fut = ex.submit(lambda: con.execute("SELECT COUNT(*) FROM precios").fetchone())
+                fut.result()  # no debe levantar ProgrammingError
+        finally:
+            con.close()
+            for sufijo in ("", "-wal", "-shm"):
+                try:
+                    os.remove(tmp + sufijo)
+                except OSError:
+                    pass
+
+    def test_con_h2_se_puede_usar_desde_otro_hilo(self):
+        tmp = tempfile.mktemp(suffix=".db")
+        con = hector2_db.abrir(tmp)
+        try:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as ex:
+                fut = ex.submit(lambda: hector2_db.confianza_canal(con, "canal-x"))
+                fut.result()
+        finally:
+            con.close()
+            for sufijo in ("", "-wal", "-shm"):
+                try:
+                    os.remove(tmp + sufijo)
+                except OSError:
+                    pass
+
+
 class TestHector2Db(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mktemp(suffix=".db")

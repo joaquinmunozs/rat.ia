@@ -164,6 +164,18 @@ OBJETIVOS_RITMO = {
 # declarar `global` en cada función que la usa.
 _ESTADO = {"con_hector": None, "con_h2": None}
 
+# BUG REAL (23-ago-2026): `evaluar_mensaje` corre dentro de
+# `asyncio.to_thread` para no bloquear el event loop con la verificación en
+# vivo (red), pero eso mueve las consultas a con_hector/con_h2 a un hilo
+# distinto del que las abrió -- sqlite3 lo rechaza con
+# "SQLite objects created in a thread can only be used in that same thread"
+# en el primer mensaje real que llegó. `check_same_thread=False` (ver
+# hector2_filtro.abrir_solo_lectura y hector2_db.abrir) le saca esa barrera
+# a sqlite3, pero sqlite3 SIGUE sin ser seguro para uso concurrente desde
+# varios hilos a la vez -- este lock es lo que de verdad lo hace seguro:
+# nunca hay dos hilos tocando con_hector/con_h2 al mismo tiempo.
+_DB_LOCK = asyncio.Lock()
+
 
 def _reabrir_con_hector(ruta):
     anterior = _ESTADO.get("con_hector")
@@ -185,7 +197,8 @@ async def _tarea_refresco_base(intervalo=None):
         try:
             ruta, nueva = await asyncio.to_thread(descargar_base_hector.asegurar, forzar=True)
             if ruta and nueva:
-                _reabrir_con_hector(ruta)
+                async with _DB_LOCK:
+                    _reabrir_con_hector(ruta)
                 print("[hector2] base de Héctor refrescada")
         except Exception as e:                                # noqa: BLE001
             print("[hector2] fallo refrescando la base: %s" % str(e)[:150])
@@ -563,39 +576,42 @@ def main():
             return
 
         # ── HECTOR2: el canal ya no es garantía suficiente ──────────────
-        con_h2 = _ESTADO["con_h2"]
-        r = await asyncio.to_thread(
-            hector2_filtro.evaluar_mensaje, texto, canal_id,
-            _ESTADO["con_hector"], True,
-            lambda c: hector2_db.confianza_canal(con_h2, c))
+        # Todo lo que toca con_hector/con_h2 va bajo el mismo lock -- ver el
+        # comentario de _DB_LOCK sobre por qué esto no es opcional.
+        async with _DB_LOCK:
+            con_h2 = _ESTADO["con_h2"]
+            r = await asyncio.to_thread(
+                hector2_filtro.evaluar_mensaje, texto, canal_id,
+                _ESTADO["con_hector"], True,
+                lambda c: hector2_db.confianza_canal(con_h2, c))
 
-        if r["veredicto"] == "descartado":
+            if r["veredicto"] == "descartado":
+                hector2_db.registrar_mensaje(
+                    con_h2, canal=canal_id, tienda=r["tienda"], url=r["url"],
+                    caida_declarada=r["caida_declarada"], caida_real=r["caida_real"],
+                    fuente=r["fuente"], veredicto="descartado", motivo=r["motivo"],
+                    topico_original=str(topico), topico_final="", texto_muestra=texto)
+                print("🚫 descartado (%s): %s..." % (r["motivo"][:60],
+                      texto[:50].replace("\n", " ")))
+                return
+
+            umbral = hector2_db.umbral_actual(con_h2, str(topico))
+            pasa_directo = r["puntaje"] >= umbral
+            topico_final = topico if pasa_directo else (topico_dudosos or topico)
+
+            a_enviar = texto
+            if r["veredicto"] != "confirmado":
+                a_enviar = "🔎 <i>sin verificar del todo</i>\n%s" % texto
+
+            _enviar_a_ratia(a_enviar, topico_final)
             hector2_db.registrar_mensaje(
                 con_h2, canal=canal_id, tienda=r["tienda"], url=r["url"],
                 caida_declarada=r["caida_declarada"], caida_real=r["caida_real"],
-                fuente=r["fuente"], veredicto="descartado", motivo=r["motivo"],
-                topico_original=str(topico), topico_final="", texto_muestra=texto)
-            print("🚫 descartado (%s): %s..." % (r["motivo"][:60],
-                  texto[:50].replace("\n", " ")))
-            return
-
-        umbral = hector2_db.umbral_actual(con_h2, str(topico))
-        pasa_directo = r["puntaje"] >= umbral
-        topico_final = topico if pasa_directo else (topico_dudosos or topico)
-
-        a_enviar = texto
-        if r["veredicto"] != "confirmado":
-            a_enviar = "🔎 <i>sin verificar del todo</i>\n%s" % texto
-
-        _enviar_a_ratia(a_enviar, topico_final)
-        hector2_db.registrar_mensaje(
-            con_h2, canal=canal_id, tienda=r["tienda"], url=r["url"],
-            caida_declarada=r["caida_declarada"], caida_real=r["caida_real"],
-            fuente=r["fuente"], veredicto=r["veredicto"], motivo=r["motivo"],
-            topico_original=str(topico), topico_final=str(topico_final),
-            texto_muestra=texto)
-        print("reenviado (topico %s, %s): %s..." % (
-            topico_final, r["veredicto"], texto[:50].replace("\n", " ")))
+                fuente=r["fuente"], veredicto=r["veredicto"], motivo=r["motivo"],
+                topico_original=str(topico), topico_final=str(topico_final),
+                texto_muestra=texto)
+            print("reenviado (topico %s, %s): %s..." % (
+                topico_final, r["veredicto"], texto[:50].replace("\n", " ")))
 
     print("Escuchando %d canal(es): %s" % (len(canales), ", ".join(str(c) for c in canales)))
     # NO se llama a client.start() acá -- ya está conectado y autorizado

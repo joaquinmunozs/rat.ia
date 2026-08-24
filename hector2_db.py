@@ -62,7 +62,12 @@ CREATE TABLE IF NOT EXISTS ritmo_topico (
 
 
 def abrir(ruta=None):
-    con = sqlite3.connect(ruta or RUTA, timeout=30)
+    # check_same_thread=False: en reenviar_ofertas.py esta conexion se usa
+    # tanto desde el hilo del event loop (registrar_mensaje, umbral_actual)
+    # como desde el hilo de asyncio.to_thread que corre evaluar_mensaje
+    # (confianza_canal). El llamador serializa el acceso con un lock; esto
+    # solo baja la barrera de sqlite3 para permitirlo.
+    con = sqlite3.connect(ruta or RUTA, timeout=30, check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.executescript(ESQUEMA)
     con.execute("PRAGMA journal_mode=WAL")

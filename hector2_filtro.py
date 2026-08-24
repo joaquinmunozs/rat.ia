@@ -150,8 +150,15 @@ def abrir_solo_lectura(ruta):
     """Conexión de solo lectura a la copia descargada de precios.db. Con
     `mode=ro`, SQLite rechaza cualquier escritura a nivel de driver -- no
     hace falta confiar en que el código de arriba nunca llame a un INSERT
-    por error."""
-    con = sqlite3.connect("file:%s?mode=ro" % ruta, uri=True, timeout=10)
+    por error.
+
+    `check_same_thread=False`: `evaluar_mensaje` corre dentro de
+    `asyncio.to_thread` (ver reenviar_ofertas.py), así que esta conexión se
+    usa desde un hilo distinto al que la abrió. El acceso concurrente real
+    se serializa con un lock en el llamador -- esto solo baja la barrera de
+    sqlite3, no reemplaza esa serialización."""
+    con = sqlite3.connect("file:%s?mode=ro" % ruta, uri=True, timeout=10,
+                          check_same_thread=False)
     con.row_factory = sqlite3.Row
     return con
 
