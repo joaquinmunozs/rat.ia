@@ -231,14 +231,22 @@ async def _tarea_ajustar_ritmos(intervalo=3600):
 # antes de confiar en esto.
 SESION_DIR = os.environ.get("HECTOR2_SESION_DIR") or os.path.dirname(os.path.abspath(__file__))
 SESION = os.path.join(SESION_DIR, "reenvio.session")
+# TelegramClient abre el archivo de sesión AL CONSTRUIRSE, no al conectar --
+# si el directorio no existe todavía (un volumen recién montado, o un
+# HECTOR2_SESION_DIR que apunta a algo que nunca se creó), revienta ahí
+# mismo con "unable to open database file", antes de que el bootstrap de
+# variables de entorno tenga chance de correr. Se garantiza el directorio
+# apenas se sabe cuál es, no como parte del camino de reconstrucción.
+os.makedirs(SESION_DIR, exist_ok=True)
 
 
-def _sesion_valida(ruta):
-    """¿Hay ya una sesión utilizable en `ruta`? No compara contra ningún
-    snapshot -- Telethon SÍ reescribe partes del archivo en operación normal
-    (entidades, estado de updates), así que comparar checksums marcaría como
-    "corrupta" una sesión que en realidad solo envejeció. Lo único que
-    importa es que tenga una fila con auth_key en `sessions`."""
+def _sesion_parece_utilizable(ruta):
+    """Chequeo BARATO, no autoritativo: ¿el archivo abre como sqlite y tiene
+    una fila con algo en `auth_key`? Sirve para no reconstruir de arriba
+    cuando claramente no hace falta, pero NO prueba que el auth_key sea
+    válido -- un archivo truncado a mitad de una página puede seguir dando
+    una fila con bytes en esa columna. La prueba real es
+    `_asegurar_sesion_autorizada`, que le pregunta al servidor."""
     if not os.path.exists(ruta):
         return False
     try:
@@ -250,13 +258,20 @@ def _sesion_valida(ruta):
         return False
 
 
-def _bootstrap_sesion_desde_env():
-    """Reconstruye reenvio.session desde HECTOR2_SESION_B64_1, _2, ... si
-    hace falta. Solo escribe si `_sesion_valida(SESION)` es False -- una vez
-    que hay una sesión real en el volumen, esto no vuelve a tocarla nunca
-    (ver el docstring de _sesion_valida)."""
-    if _sesion_valida(SESION):
-        return
+def _bootstrap_sesion_desde_env(forzar=False):
+    """Reconstruye reenvio.session desde HECTOR2_SESION_B64_1, _2, ...
+
+    `forzar=False` (default): solo escribe si `_sesion_parece_utilizable`
+    dice que no hay nada usable -- barato, para el arranque normal.
+    `forzar=True`: reescribe sin mirar el archivo actual. Se usa desde
+    `_asegurar_sesion_autorizada` DESPUÉS de que el propio servidor de
+    Telegram ya dijo que la sesión actual no es válida -- ahí no hace falta
+    ninguna heurística local, hay una respuesta real.
+
+    Devuelve True si terminó con algo escrito en disco (nuevo o preexistente).
+    """
+    if not forzar and _sesion_parece_utilizable(SESION):
+        return True
     partes = []
     i = 1
     while True:
@@ -266,17 +281,64 @@ def _bootstrap_sesion_desde_env():
         partes.append(v)
         i += 1
     if not partes:
-        return
+        return False
     try:
         datos = base64.b64decode("".join(partes))
         os.makedirs(SESION_DIR, exist_ok=True)
         with open(SESION, "wb") as f:
             f.write(datos)
         print("[hector2] sesion reconstruida desde variables de entorno "
-              "(%d bytes, %d parte(s)) -- valida: %s"
-              % (len(datos), len(partes), _sesion_valida(SESION)))
+              "(%d bytes, %d parte(s))" % (len(datos), len(partes)))
+        return True
     except Exception as e:                                    # noqa: BLE001
         print("[hector2] no se pudo reconstruir la sesion desde env: %s" % str(e)[:150])
+        return False
+
+
+async def _asegurar_sesion_autorizada(crear_cliente):
+    """La única prueba real de que la sesión sirve: preguntarle al servidor.
+    Si no está autorizada (auth_key inválido, revocado, o el archivo estaba
+    corrupto -- el caso real del 23-ago: `railway volume files upload`
+    corrompió el binario en silencio, y una heurística de "¿parece una fila
+    de sqlite?" no lo detectó), se reconstruye desde las variables de
+    entorno UNA vez y se reintenta. Nunca cae al prompt interactivo de
+    `client.start()`: un contenedor sin terminal solo puede reventar ahí.
+
+    Recibe una FÁBRICA de cliente, no un cliente ya armado: Telethon carga
+    la sesión en memoria al construir el objeto, así que reescribir el
+    archivo en disco no le sirve de nada a un cliente que ya existe -- hace
+    falta uno nuevo para que la relectura sea real. Devuelve el cliente
+    utilizable (conectado y autorizado) o None."""
+    async def _intentar():
+        # Un archivo que ni siquiera es un sqlite válido revienta DENTRO de
+        # crear_cliente() (Telethon corre una consulta al construirse, no
+        # al conectar) -- eso también cuenta como "sesión no utilizable",
+        # no solo un is_user_authorized() en falso.
+        client = crear_cliente()
+        await client.connect()
+        if await client.is_user_authorized():
+            return client
+        await client.disconnect()
+        return None
+
+    try:
+        client = await _intentar()
+        if client is not None:
+            return client
+        print("[hector2] sesion existente no autorizada contra el servidor "
+              "-- reconstruyendo desde variables de entorno")
+    except Exception as e:                                    # noqa: BLE001
+        print("[hector2] sesion existente ilegible (%s) -- "
+              "reconstruyendo desde variables de entorno" % str(e)[:150])
+
+    if not _bootstrap_sesion_desde_env(forzar=True):
+        return None
+    try:
+        return await _intentar()
+    except Exception as e:                                    # noqa: BLE001
+        print("[hector2] la sesion reconstruida desde env tampoco sirve: %s"
+              % str(e)[:150])
+        return None
 
 # Lo que el mensaje original trae para "loguearte"/unirte a MÁS canales del
 # aliado — no tiene sentido en el mensaje reenviado, y es justo el tipo de
@@ -429,13 +491,27 @@ def main():
         print("Falta CANALES_ORIGEN (usernames o IDs separados por coma)")
         return 1
 
-    _bootstrap_sesion_desde_env()
-    client = TelegramClient(SESION, int(api_id), api_hash)
-
     if a.login:
-        client.start()  # pide teléfono + código la primera vez, interactivo
+        # Interactivo a propósito -- SOLO se corre a mano, una vez, desde una
+        # terminal real. En producción (Railway) nunca se llega acá: un
+        # contenedor sin terminal solo puede reventar en el prompt.
+        client = TelegramClient(SESION, int(api_id), api_hash)
+        client.start()
         print("Login OK. La sesión quedó guardada en %s" % SESION)
         return 0
+
+    def _crear_cliente():
+        return TelegramClient(SESION, int(api_id), api_hash)
+
+    _bootstrap_sesion_desde_env()   # chequeo barato antes de tocar red
+    client = asyncio.get_event_loop().run_until_complete(
+        _asegurar_sesion_autorizada(_crear_cliente))
+    if client is None:
+        print("::error:: Hector2 no tiene una sesión de Telegram autorizada, "
+              "ni en disco ni reconstruible desde HECTOR2_SESION_B64_* -- "
+              "hay que correr 'python reenviar_ofertas.py --login' a mano y "
+              "actualizar esas variables con el archivo nuevo.")
+        return 1
 
     # Hector2: base propia (mensajes, confianza por canal, ritmo por tópico) y
     # copia de solo lectura de la base de Héctor para cruzar precios. Si la
@@ -522,7 +598,11 @@ def main():
             topico_final, r["veredicto"], texto[:50].replace("\n", " ")))
 
     print("Escuchando %d canal(es): %s" % (len(canales), ", ".join(str(c) for c in canales)))
-    client.start()
+    # NO se llama a client.start() acá -- ya está conectado y autorizado
+    # desde _asegurar_sesion_autorizada(). Un segundo start() no rompería
+    # nada (Telethon lo tolera), pero es el mismo camino que puede caer en
+    # el prompt interactivo si algo cambió el estado entre medio; mejor que
+    # ese camino no exista en el flujo normal.
     client.loop.create_task(_tarea_refresco_base())
     client.loop.create_task(_tarea_ajustar_ritmos())
     client.run_until_disconnected()
