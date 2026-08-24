@@ -95,8 +95,30 @@ VARIABLES DE ENTORNO
     VIGIA_TOPICO_ERRORES, VIGIA_TOPICO_OFERTAS, VIGIA_TOPICO_ELECTRONICOS,
     VIGIA_TOPICO_SUPERMERCADO, VIGIA_TOPICO_VUELOS, VIGIA_TOPICO_HOGAR
                                    IDs de tópico del grupo de Rat.IA
+    VIGIA_TOPICO_DUDOSOS           (Hector2) tópico donde caen los hallazgos
+                                   que no se pudieron confirmar contra nada.
+                                   Si no se define, esos mensajes se mandan
+                                   igual a su tópico normal, marcados -- nunca
+                                   se pierden en silencio por falta de config.
+
+HECTOR2: EL FILTRO DE CONFIANZA (23-ago-2026)
+------------------------------------------------------------------------------
+Hasta acá este archivo era un relay puro: si el canal ya venía categorizado,
+se reenviaba SIEMPRE, sin mirar si la caída declarada era real. El caso que lo
+destapó: un jugo en caja que "el aliado" anunciaba bajando de $2.000 a $400,
+cuando siempre costó $400 -- el mismo fraude de anclaje de precio que
+Consumer Reports midió en más de 30% de las "ofertas" de grandes retailers
+en 2024.
+
+Antes de reenviar, `hector2_filtro.evaluar_mensaje` cruza el producto contra
+la base REAL de Héctor (`descargar_base_hector.py`, un respaldo de solo
+lectura) y, si no está ahí, intenta verificarlo en vivo. El resultado nunca es
+un simple sí/no silencioso -- ver `hector2_db.py` para el ritmo adaptativo por
+tópico (ni se satura el grupo, ni queda mudo) y `hector2_filtro.py` para el
+porqué de cada señal.
 """
 import argparse
+import asyncio
 import json
 import os
 import re
@@ -113,6 +135,76 @@ try:
 except ImportError:
     print("Falta telethon: pip install telethon")
     raise
+
+import descargar_base_hector
+import hector2_db
+import hector2_filtro
+
+# Objetivo de mensajes por día, por tópico -- lo que dispara el ajuste
+# adaptativo de `hector2_db.ajustar_umbral`. Son un punto de partida, no un
+# número medido: la guía de referencia para canales de Telegram no-noticiosos
+# es 1-2 posts/día como base, 3 como máximo aceptable si el contenido vale la
+# pena, y que 4+ ya deteriora el alcance (postmypost.io, floqal.com, 2026).
+# Acá se ajustan un poco al alza porque son alertas que el suscriptor pidió
+# explícitamente, no contenido genérico -- pero quedan pensados para
+# CALIBRARSE con datos reales de las primeras semanas, no para quedarse fijos.
+OBJETIVOS_RITMO = {
+    "VIGIA_TOPICO_ERRORES": (1, 4),
+    "VIGIA_TOPICO_OFERTAS": (3, 8),
+    "VIGIA_TOPICO_ELECTRONICOS": (2, 6),
+    "VIGIA_TOPICO_HOGAR": (2, 6),
+    "VIGIA_TOPICO_SUPERMERCADO": (2, 6),
+    "VIGIA_TOPICO_VUELOS": (1, 4),
+}
+
+# Estado compartido del proceso. Vive en un dict (no en variables sueltas)
+# para que la tarea de refresco pueda reemplazar la conexión sin tener que
+# declarar `global` en cada función que la usa.
+_ESTADO = {"con_hector": None, "con_h2": None}
+
+
+def _reabrir_con_hector(ruta):
+    anterior = _ESTADO.get("con_hector")
+    _ESTADO["con_hector"] = hector2_filtro.abrir_solo_lectura(ruta)
+    if anterior:
+        try:
+            anterior.close()
+        except Exception:                                     # noqa: BLE001
+            pass
+
+
+async def _tarea_refresco_base(intervalo=None):
+    """Vuelve a bajar precios.db de Héctor cada `intervalo` segundos, sin
+    interrumpir el reenvío mientras tanto -- se descarga a un .tmp y se
+    reemplaza recién al final (ver descargar_base_hector.descargar)."""
+    intervalo = intervalo or descargar_base_hector.INTERVALO_SEG
+    while True:
+        await asyncio.sleep(intervalo)
+        try:
+            ruta, nueva = await asyncio.to_thread(descargar_base_hector.asegurar, forzar=True)
+            if ruta and nueva:
+                _reabrir_con_hector(ruta)
+                print("[hector2] base de Héctor refrescada")
+        except Exception as e:                                # noqa: BLE001
+            print("[hector2] fallo refrescando la base: %s" % str(e)[:150])
+
+
+async def _tarea_ajustar_ritmos(intervalo=3600):
+    """Una vez por hora, no por mensaje -- perseguir ruido de corto plazo
+    haría que el umbral bailara todo el día en vez de converger. Ver el
+    docstring de `hector2_db.ajustar_umbral`."""
+    con = _ESTADO["con_h2"]
+    while True:
+        await asyncio.sleep(intervalo)
+        try:
+            for variable, (piso, techo) in OBJETIVOS_RITMO.items():
+                topico = (os.environ.get(variable) or "").strip()
+                if not topico:
+                    continue
+                enviados = hector2_db.contar_enviados_24h(con, topico)
+                hector2_db.ajustar_umbral(con, topico, enviados, piso, techo)
+        except Exception as e:                                # noqa: BLE001
+            print("[hector2] fallo ajustando ritmos: %s" % str(e)[:150])
 
 SESION = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reenvio.session")
 
@@ -274,6 +366,19 @@ def main():
         print("Login OK. La sesión quedó guardada en %s" % SESION)
         return 0
 
+    # Hector2: base propia (mensajes, confianza por canal, ritmo por tópico) y
+    # copia de solo lectura de la base de Héctor para cruzar precios. Si la
+    # descarga inicial falla (sin red, GitHub caído), el proceso sigue: todo
+    # cae a "sin_verificar" -- degradado, no roto.
+    _ESTADO["con_h2"] = hector2_db.abrir()
+    ruta_hector, _ = descargar_base_hector.asegurar()
+    if ruta_hector:
+        _reabrir_con_hector(ruta_hector)
+    else:
+        print("[hector2] arranca sin base de Héctor -- todo pasa por "
+              "verificación en vivo o queda sin_verificar")
+    topico_dudosos = (os.environ.get("VIGIA_TOPICO_DUDOSOS") or "").strip() or None
+
     @client.on(events.NewMessage(chats=canales))
     async def _al_llegar(event):
         # `raw_text` es texto plano puro: pierde cualquier link "escondido"
@@ -290,6 +395,7 @@ def main():
         chat = await event.get_chat()
         username = getattr(chat, "username", None)
         topico = _topico(event.chat_id, username)
+        canal_id = str(event.chat_id)
 
         # El canal manda: si ya tiene categoría asignada (CANALES_ERRORES,
         # CANALES_OFERTAS, etc.), es de confianza y se reenvía SIEMPRE, sin
@@ -309,11 +415,45 @@ def main():
                   % (event.chat_id, username, texto[:50].replace("\n", " ")))
             return
 
-        _enviar_a_ratia(texto, topico)
-        print("reenviado (topico %s): %s..." % (topico, texto[:50].replace("\n", " ")))
+        # ── HECTOR2: el canal ya no es garantía suficiente ──────────────
+        con_h2 = _ESTADO["con_h2"]
+        r = await asyncio.to_thread(
+            hector2_filtro.evaluar_mensaje, texto, canal_id,
+            _ESTADO["con_hector"], True,
+            lambda c: hector2_db.confianza_canal(con_h2, c))
+
+        if r["veredicto"] == "descartado":
+            hector2_db.registrar_mensaje(
+                con_h2, canal=canal_id, tienda=r["tienda"], url=r["url"],
+                caida_declarada=r["caida_declarada"], caida_real=r["caida_real"],
+                fuente=r["fuente"], veredicto="descartado", motivo=r["motivo"],
+                topico_original=str(topico), topico_final="", texto_muestra=texto)
+            print("🚫 descartado (%s): %s..." % (r["motivo"][:60],
+                  texto[:50].replace("\n", " ")))
+            return
+
+        umbral = hector2_db.umbral_actual(con_h2, str(topico))
+        pasa_directo = r["puntaje"] >= umbral
+        topico_final = topico if pasa_directo else (topico_dudosos or topico)
+
+        a_enviar = texto
+        if r["veredicto"] != "confirmado":
+            a_enviar = "🔎 <i>sin verificar del todo</i>\n%s" % texto
+
+        _enviar_a_ratia(a_enviar, topico_final)
+        hector2_db.registrar_mensaje(
+            con_h2, canal=canal_id, tienda=r["tienda"], url=r["url"],
+            caida_declarada=r["caida_declarada"], caida_real=r["caida_real"],
+            fuente=r["fuente"], veredicto=r["veredicto"], motivo=r["motivo"],
+            topico_original=str(topico), topico_final=str(topico_final),
+            texto_muestra=texto)
+        print("reenviado (topico %s, %s): %s..." % (
+            topico_final, r["veredicto"], texto[:50].replace("\n", " ")))
 
     print("Escuchando %d canal(es): %s" % (len(canales), ", ".join(str(c) for c in canales)))
     client.start()
+    client.loop.create_task(_tarea_refresco_base())
+    client.loop.create_task(_tarea_ajustar_ritmos())
     client.run_until_disconnected()
     return 0
 
