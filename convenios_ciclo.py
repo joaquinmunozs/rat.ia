@@ -45,6 +45,21 @@ RECORDATORIO_TELEGRAM_DIAS = 7
 RECORDATORIO_TELEGRAM_RECURRENTE_DIAS = 30
 VENTANA_ULTIMA_SEMANA_DIAS = 7
 
+# ── TOPES POR PASADA, Y POR QUÉ NO SON OPCIONALES ────────────────────────
+#
+# El primer ensayo real contra las 16 páginas devolvió **1.347 convenios**
+# con acción pendiente. Sin tope, la primera corrida con `--confirmar`
+# habría mandado 1.347 mensajes de golpe a Telegram: el grupo silenciado
+# en minutos, y Telegram cortando por límite de envíos mucho antes de
+# terminar.
+#
+# No es un caso de borde: es el arranque NORMAL de un monitor que ve todo
+# el catálogo por primera vez y lo considera "nuevo". El goteo también
+# resuelve el arranque en frío -- el resto no se pierde, entra en las
+# pasadas siguientes, priorizado por descuento.
+TOPE_TELEGRAM_POR_PASADA = 25
+TOPE_INSTAGRAM_POR_DIA = 2
+
 # Las marcas/comercios que Joaquín nombró explícitamente como el objetivo
 # ("alianzas realmente importantes"). Un convenio de una marca de esta
 # lista basta con el piso de 30% para calificar; una marca fuera de la
@@ -128,3 +143,42 @@ def decidir_acciones(*, es_nuevo: bool, descuento: int, comercio: str,
         acciones.append("instagram_ultima_semana")
 
     return acciones
+
+
+def aplicar_topes(pendientes, ya_publicados_ig_hoy: int = 0):
+    """De todo lo que tiene acción pendiente, qué se ejecuta EN ESTA PASADA.
+
+    `pendientes` es [(convenio, [acciones]), ...] tal como lo arma el
+    monitor. Devuelve la misma forma, recortada y priorizada:
+
+      · Instagram: máximo `TOPE_INSTAGRAM_POR_DIA` al día, los de MAYOR
+        descuento primero -- es una vitrina, entra lo mejor.
+      · Telegram: máximo `TOPE_TELEGRAM_POR_PASADA`, también por descuento.
+        Lo que no entra no se pierde: como no se marca en la base, la
+        pasada siguiente lo vuelve a considerar.
+
+    Se prioriza por descuento y no por orden de llegada a propósito: en el
+    arranque en frío, "orden de llegada" es simplemente el orden del
+    catálogo, que no significa nada para quien lee el canal.
+    """
+    ordenados = sorted(pendientes, key=lambda p: -p[0].descuento)
+
+    cupo_ig = max(0, TOPE_INSTAGRAM_POR_DIA - ya_publicados_ig_hoy)
+    enviados_tg = 0
+    salida = []
+
+    for conv, acciones in ordenados:
+        acciones_ig = [a for a in acciones if a.startswith("instagram_")]
+        acciones_tg = [a for a in acciones if a.startswith("telegram_")]
+
+        permitidas = []
+        if acciones_ig and cupo_ig > 0:
+            permitidas += acciones_ig
+            cupo_ig -= 1
+        if acciones_tg and enviados_tg < TOPE_TELEGRAM_POR_PASADA:
+            permitidas += acciones_tg
+            enviados_tg += 1
+
+        if permitidas:
+            salida.append((conv, permitidas))
+    return salida

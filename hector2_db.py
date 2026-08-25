@@ -429,6 +429,24 @@ def marcar_aviso_ultima_semana_ig(con, clave, ahora_epoch):
     con.commit()
 
 
+def convenios_publicados_ig_hoy(con, hoy_iso):
+    """Cuántos convenios salieron a Instagram HOY -- para el tope diario.
+
+    Se cuentan los que se marcaron publicados o avisados con fecha de
+    actualización de hoy. `actualizado_en` es epoch, así que se compara
+    contra el rango del día calendario que pasa el llamador (que sabe la
+    zona horaria; este módulo no).
+    """
+    import datetime
+    d = datetime.date.fromisoformat(hoy_iso)
+    inicio = int(datetime.datetime(d.year, d.month, d.day).timestamp())
+    f = con.execute(
+        "SELECT COUNT(*) AS n FROM convenios WHERE actualizado_en >= ? AND "
+        "(publicado_en_instagram=1 OR aviso_ultima_semana_ig_enviado=1)",
+        (inicio,)).fetchone()
+    return f["n"] if f else 0
+
+
 def marcar_convenio_vencido(con, clave, ahora_epoch):
     con.execute(
         "UPDATE convenios SET estado='vencido', actualizado_en=? WHERE clave=?",

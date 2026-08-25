@@ -149,5 +149,51 @@ class TestVencido(unittest.TestCase):
         self.assertEqual(acc, [])
 
 
+
+
+class TestTopes(unittest.TestCase):
+    """El ensayo real contra las 16 páginas devolvió 1.347 convenios con
+    acción pendiente. Sin tope, la primera corrida con --confirmar habría
+    mandado 1.347 mensajes de golpe."""
+
+    class _Conv:
+        def __init__(self, descuento, clave):
+            self.descuento = descuento
+            self.clave = clave
+
+    def _lote(self, n, acciones):
+        return [(self._Conv(d, "c%d" % d), list(acciones)) for d in range(n, 0, -1)]
+
+    def test_telegram_se_recorta_al_tope(self):
+        pend = self._lote(100, ["telegram_nuevo"])
+        salida = cc.aplicar_topes(pend)
+        self.assertEqual(len(salida), cc.TOPE_TELEGRAM_POR_PASADA)
+
+    def test_instagram_max_2_al_dia(self):
+        pend = self._lote(50, ["telegram_nuevo", "instagram_nuevo"])
+        salida = cc.aplicar_topes(pend)
+        con_ig = [s for s in salida if any(a.startswith("instagram_") for a in s[1])]
+        self.assertEqual(len(con_ig), 2)
+
+    def test_instagram_respeta_lo_ya_publicado_hoy(self):
+        pend = self._lote(50, ["instagram_nuevo"])
+        salida = cc.aplicar_topes(pend, ya_publicados_ig_hoy=2)
+        self.assertEqual(salida, [])
+
+    def test_gana_el_de_mayor_descuento(self):
+        pend = [(self._Conv(10, "bajo"), ["instagram_nuevo"]),
+                (self._Conv(80, "alto"), ["instagram_nuevo"])]
+        salida = cc.aplicar_topes(pend, ya_publicados_ig_hoy=1)
+        self.assertEqual(len(salida), 1)
+        self.assertEqual(salida[0][0].clave, "alto")
+
+    def test_lo_que_no_entra_no_se_marca_y_vuelve_en_la_proxima(self):
+        # No se "pierde": simplemente no sale en esta lista, así que el
+        # monitor no lo marca en la base y la pasada siguiente lo reevalúa.
+        pend = self._lote(100, ["telegram_nuevo"])
+        salida = cc.aplicar_topes(pend)
+        self.assertLess(len(salida), len(pend))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

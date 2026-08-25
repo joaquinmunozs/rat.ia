@@ -103,6 +103,44 @@ def caption_error(nombre: str, tienda: str) -> str:
     )
 
 
+def publicar_media(pieza: bytes, texto: str, cuenta_id: str,
+                   pagina_id: str | None = None, plataforma: str = "instagram",
+                   log=print) -> dict:
+    """Sube una pieza YA ARMADA y la publica. Sin generarla ni verificarla.
+
+    (Claude, 25-ago-2026) Existe porque `publicar_oferta` hace las tres
+    cosas juntas —generar con el molde de retail, verificar precios,
+    publicar— y los convenios banco-comercio arman su pieza con otro molde
+    (`convenios_pieza.py`: sin "antes/ahora", sin foto de producto, con su
+    propia verificación de porcentaje y marcas). Compartir el paso de
+    publicación evita reimplementar el contrato de Blotato dos veces.
+
+    Quien llama es responsable de haber verificado la pieza ANTES: acá ya
+    no hay red de seguridad, esto publica.
+    """
+    import base64
+    log("[ratia-pub] subiendo la pieza a Blotato…")
+    data_uri = "data:image/png;base64," + base64.b64encode(pieza).decode()
+    media = _pedir("/media", {"url": data_uri}, metodo="POST")
+    url_media = media.get("url") or media.get("mediaUrl")
+    if not url_media:
+        raise RuntimeError("Blotato no devolvió URL de la media: %s" % media)
+
+    destino = {"targetType": plataforma}
+    if pagina_id:
+        destino["pageId"] = pagina_id
+
+    payload = {"post": {
+        "accountId": cuenta_id,
+        "target": destino,
+        "content": {"platform": plataforma, "text": texto, "mediaUrls": [url_media]},
+    }}
+    log("[ratia-pub] publicando en %s…" % plataforma)
+    envio = _pedir("/posts", payload, metodo="POST")
+    log("[ratia-pub] publicado: %s" % envio)
+    return envio
+
+
 def publicar_oferta(nombre_producto: str, precio_antes: float, precio_ahora: float,
                     foto: str | bytes, cuenta_id: str, tienda: str,
                     tipo: str = "oferta", pagina_id: str | None = None,
