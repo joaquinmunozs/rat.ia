@@ -27,8 +27,27 @@ TAG = "respaldo-base"
 ASSET = "precios.db"
 URL = "https://github.com/%s/releases/download/%s/%s" % (REPO, TAG, ASSET)
 
-RUTA_LOCAL = os.environ.get("HECTOR2_BASE_HECTOR", os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "precios-hector-solo-lectura.db"))
+def _ruta_por_defecto():
+    """(Claude, 25-ago-2026) Misma regla que `hector2_db`: el disco que
+    sobrevive al deploy gana.
+
+    Acá no se perdía nada irrecuperable —la copia se vuelve a bajar sola— pero
+    sí significaba ~40 MB de descarga en cada reinicio y, peor, una ventana al
+    arrancar en la que `con_hector` no existe todavía: durante esos segundos
+    NINGÚN mensaje se puede cruzar contra la base propia y todos caen a
+    "sin verificar". Con el volumen, la copia ya está ahí cuando el proceso
+    levanta."""
+    explicita = os.environ.get("HECTOR2_BASE_HECTOR")
+    if explicita:
+        return explicita
+    volumen = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+    if volumen and os.path.isdir(volumen):
+        return os.path.join(volumen, "precios-hector-solo-lectura.db")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "precios-hector-solo-lectura.db")
+
+
+RUTA_LOCAL = _ruta_por_defecto()
 
 # Cada cuánto se refresca. El respaldo de Héctor se actualiza una vez al día
 # (el primer `schedule` del día); refrescar cada 4h alcanza de sobra y no le

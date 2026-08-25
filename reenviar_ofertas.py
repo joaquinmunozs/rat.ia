@@ -44,13 +44,41 @@ no aplica a canales categorizados.
 
 RUTEO POR CANAL DE ORIGEN (tal como quedaron los canales del aliado)
 ------------------------------------------------------------------------------
-    75%, 80              -> 🚨 Errores de precio   (CANALES_ERRORES)
-    50%, 60%, 60% Sin MKP -> 🏷️ Ofertas 50-75%      (CANALES_OFERTAS)
     Tecno                 -> 📱 Electrónicos         (CANALES_TECNO)
     Supermercado          -> 🛒 Supermercado         (CANALES_SUPERMERCADO)
     COCHA                 -> ✈️ Vuelos               (CANALES_VUELOS)
     (ninguno todavía)     -> 🏠 Hogar                (CANALES_HOGAR, por si
                              el aliado suma un canal de esa categoría después)
+
+⚠️ CAMBIO DEL 25-ago-2026: los canales GENERALES del aliado ("75%", "80",
+"50%", "60%") ya NO deciden el tópico. Su vara no es la nuestra: su "-80%"
+suele estar medido contra un precio de lista que la tienda nunca cobró. Ahora
+el destino sale de la caída REAL, calculada contra el mínimo de 30 días de la
+base de Héctor (`_topico_por_caida`):
+
+    caída 85% - 99%   -> 🚨 Errores de precio   (VIGIA_TOPICO_ERRORES_GRAVES)
+    caída 70% - 85%   -> 🏷️ Ofertas 70%         (VIGIA_TOPICO_OFERTAS70)
+    caída 40% - 70%   -> 🏷️ Ofertas reales      (VIGIA_TOPICO_OFERTAS)
+
+Los canales de CATEGORÍA (Tecno, Supermercado, Vuelos, Hogar) siguen mandando
+por canal: ahí el canal sabe algo —el rubro— que el porcentaje no dice.
+
+EL AVISO SE REARMA, NO SE REENVÍA (25-ago-2026)
+------------------------------------------------------------------------------
+El texto del aliado ya no llega al canal. Se arma uno nuevo con el formato de
+Rat.IA (`alertas.armar_texto`) y datos propios: comercio, producto, precio
+actual, el sondeo histórico CON LA FECHA de cada precio, y el link. Motivos:
+
+  · arrastraba el rank del aliado ("DRank"), que no es el nuestro;
+  · arrastraba su "antes" inflado como si fuera una referencia real; y
+  · lo encabezaba un "🔎 sin verificar del todo" que salía en el 100% de los
+    mensajes. No era exceso de prudencia: `detectar_producto` no reconocía
+    `simple.ripley.cl` como `ripley.cl` (comparaba el dominio exacto, no el
+    sufijo), así que NUNCA llegaba a cruzar contra la base propia. Arreglado
+    en `hector2_filtro.tienda_de`.
+
+Amazon se descarta entero: todas sus ofertas resultaron ser productos que no
+despachan a Chile (`hector2_filtro.esta_bloqueada`).
 El canal "... Chat" NO es un canal de ofertas, es conversación: no debe
 estar en CANALES_ORIGEN ni en ninguna categoría.
 
@@ -95,6 +123,18 @@ VARIABLES DE ENTORNO
     VIGIA_TOPICO_ERRORES, VIGIA_TOPICO_OFERTAS, VIGIA_TOPICO_ELECTRONICOS,
     VIGIA_TOPICO_SUPERMERCADO, VIGIA_TOPICO_VUELOS, VIGIA_TOPICO_HOGAR
                                    IDs de tópico del grupo de Rat.IA
+    VIGIA_TOPICO_OFERTAS70         caída 70-85%. Es el tópico VIEJO de errores,
+                                   sólo renombrado, así que su id no cambió.
+    VIGIA_TOPICO_ERRORES_GRAVES    caída 85%+. Tópico nuevo (25-ago-2026).
+                                   Si falta, todo el 70%+ vuelve a caer junto
+                                   en VIGIA_TOPICO_ERRORES como antes.
+    HECTOR2_DB                     dónde vive hector2.db. En Railway TIENE que
+                                   apuntar al volumen (/data): sin eso, cada
+                                   deploy borraba el historial entero.
+    HECTOR2_BASE_HECTOR            ídem para la copia de solo lectura de la
+                                   base de Héctor.
+    HECTOR2_PERMITIR_AMAZON=1      reactiva Amazon, hoy descartado por no
+                                   despachar a Chile.
     VIGIA_TOPICO_DUDOSOS           (Hector2) tópico donde caen los hallazgos
                                    que no se pudieron confirmar contra nada.
                                    Si no se define, esos mensajes se mandan
@@ -127,6 +167,7 @@ import sqlite3
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -138,6 +179,8 @@ except ImportError:
     print("Falta telethon: pip install telethon")
     raise
 
+import alertas
+import baseprecios
 import descargar_base_hector
 import hector2_db
 import hector2_filtro
@@ -433,6 +476,119 @@ def _topico(chat_id, chat_username):
     return None
 
 
+# ── EL AVISO SE REARMA, NO SE REENVÍA (Claude, 25-ago-2026) ───────────────
+#
+# Hasta hoy el texto del aliado se reenviaba tal cual, y eso arrastraba dos
+# cosas que Joaquín pidió sacar:
+#
+#   · el rótulo de rank del aliado ("DRank"), que no es el nuestro y no
+#     significa nada para un suscriptor de Rat.IA; y
+#   · el "🔎 sin verificar del todo" que encabezaba el mensaje. No era un
+#     capricho del código: SALÍA EN EL 100% de los mensajes, porque
+#     `detectar_producto` no reconocía `simple.ripley.cl` como `ripley.cl`
+#     (comparación exacta en vez de por sufijo) y nunca llegaba a cruzar
+#     contra la base propia. Corregido en hector2_filtro.tienda_de.
+#
+# Además arrastraba el problema de fondo: los "precios históricos" del aliado
+# a veces son de horas antes. Ahora el mensaje se construye con el mismo
+# formato que usa Héctor para sus propios hallazgos (`alertas.armar_texto`),
+# con NUESTRO sondeo y la fecha de cada precio.
+CATEGORIAS_PROPIAS = ("CANALES_SUPERMERCADO", "CANALES_TECNO",
+                       "CANALES_VUELOS", "CANALES_HOGAR")
+
+
+def _topico_por_caida(caida):
+    """A qué tópico va, según la caída REAL -- no según el canal de origen.
+
+    El canal del aliado dice "80" o "50%" según SU vara. La nuestra es la de
+    `baseprecios`, y es la que decide: si su "-80%" es un -62% medido contra
+    el mínimo real de 30 días, va a Ofertas reales y no al tópico de errores.
+    """
+    if caida is None:
+        return None
+    if caida >= baseprecios.UMBRAL_ERROR_GRAVE:
+        return (os.environ.get("VIGIA_TOPICO_ERRORES_GRAVES")
+                or os.environ.get("VIGIA_TOPICO_ERRORES"))
+    if caida >= baseprecios.UMBRAL_ERROR:
+        return (os.environ.get("VIGIA_TOPICO_OFERTAS70")
+                or os.environ.get("VIGIA_TOPICO_ERRORES"))
+    return os.environ.get("VIGIA_TOPICO_OFERTAS")
+
+
+def _armar_aviso(r, con_h2, ahora=None):
+    """El mensaje con datos propios, o None si no alcanza para armarlo.
+
+    Devuelve (texto, caida, precio, referencia, historico). `caida` es la que
+    manda para el ruteo, así que sale de la mejor evidencia disponible en
+    este orden: la medida contra la base de Héctor, y sólo si no hay, la
+    declarada por el aliado.
+    """
+    precio = r.get("precio_real") or r.get("precio_declarado")
+    if not precio:
+        return None
+
+    caida = r.get("caida_real")
+    referencia = r.get("referencia")
+
+    # El sondeo propio primero (base de Héctor); si esa ficha no está en su
+    # catálogo, lo que Hector2 haya ido observando por su cuenta.
+    historico = list(r.get("historico") or [])
+    if not historico and r.get("url"):
+        historico = hector2_db.historico_propio(con_h2, r["url"])
+
+    if referencia is None and historico:
+        # Mismo criterio que baseprecios: el MÍNIMO observado, no el máximo
+        # ni la media. Es el número que aguanta que lo revisen.
+        previos = [p for p, _ in historico if p > precio]
+        if previos:
+            referencia = min(previos)
+
+    if referencia is None:
+        # Último recurso: el "antes" del aliado. Se usa sólo cuando no
+        # tenemos ni una observación propia, y el mensaje lo dice.
+        referencia = r.get("referencia_declarada")
+
+    if not referencia or referencia <= precio:
+        return None
+
+    if caida is None:
+        caida = 1 - (precio / float(referencia))
+
+    det = {
+        "url": r.get("url"),
+        "nombre": r.get("nombre"),
+        "precio": int(precio),
+        "referencia": int(referencia),
+        "caida": caida,
+        "historico_fechas": historico,
+        "historico": [p for p, _ in historico],
+        "con_historial": bool(historico),
+        "habitual": None,
+    }
+    tienda = r.get("tienda") or _comercio_de(r.get("url"))
+    texto = alertas.armar_texto(det, tienda)
+    if not historico:
+        # Honestidad, mismo criterio que usa Héctor con sus propias fichas
+        # sin historial: si el "antes" es el que declara el aliado y no un
+        # sondeo nuestro, el mensaje no puede presentarlo como verificado.
+        texto += ("\n<i>Referencia declarada por la fuente: todavía no "
+                  "tenemos sondeo propio de esta ficha</i>")
+    return texto, caida, int(precio), int(referencia), historico
+
+
+def _comercio_de(url):
+    """El nombre del comercio a partir del dominio, para las tiendas que no
+    están en el catálogo de Héctor. "simple.ripley.cl" -> "ripley"."""
+    if not url:
+        return "tienda"
+    try:
+        host = urllib.parse.urlparse(url).netloc.lower()
+    except ValueError:
+        return "tienda"
+    partes = [p for p in host.split(".") if p not in ("www", "com", "cl", "net")]
+    return partes[-1] if partes else "tienda"
+
+
 def _enviar_a_ratia(texto, topico, intentos=3):
     """Manda el mensaje. Reintenta en 429 (límite de envíos de Telegram) --
     el aliado a veces publica el MISMO hallazgo en 2-3 de sus canales a la
@@ -585,23 +741,63 @@ def main():
                 _ESTADO["con_hector"], True,
                 lambda c: hector2_db.confianza_canal(con_h2, c))
 
+            # Toda observación de precio se guarda ANTES de decidir si el
+            # aviso se manda -- incluso la de un mensaje que se va a
+            # descartar. Un precio que vimos es un dato real de la histórica
+            # aunque el anuncio que lo traía no sirviera, y es justo lo que
+            # con el tiempo permite contradecir al aliado con números
+            # propios en vez de sólo desconfiar de los suyos.
+            if r.get("url") and r.get("precio_declarado"):
+                hector2_db.registrar_precio_visto(
+                    con_h2, r["url"], r["precio_declarado"],
+                    "verificado_en_vivo" if r.get("precio_real") else "declarado_aliado",
+                    tienda=r.get("tienda"))
+
             if r["veredicto"] == "descartado":
                 hector2_db.registrar_mensaje(
                     con_h2, canal=canal_id, tienda=r["tienda"], url=r["url"],
                     caida_declarada=r["caida_declarada"], caida_real=r["caida_real"],
                     fuente=r["fuente"], veredicto="descartado", motivo=r["motivo"],
                     topico_original=str(topico), topico_final="", texto_muestra=texto)
+                hector2_db.registrar_anuncio(
+                    con_h2, origen="aliado", canal=canal_id, tienda=r["tienda"],
+                    url=r["url"], nombre=r.get("nombre"),
+                    precio=r.get("precio_declarado"),
+                    caida_declarada=r["caida_declarada"], veredicto="descartado",
+                    topico=None, enviado=False, texto=texto)
                 print("🚫 descartado (%s): %s..." % (r["motivo"][:60],
                       texto[:50].replace("\n", " ")))
                 return
 
-            umbral = hector2_db.umbral_actual(con_h2, str(topico))
-            pasa_directo = r["puntaje"] >= umbral
-            topico_final = topico if pasa_directo else (topico_dudosos or topico)
+            armado = _armar_aviso(r, con_h2)
+            if armado is None:
+                # Sin precio ni referencia no hay forma honesta de armar el
+                # aviso con datos propios, y reenviar el del aliado sería
+                # volver a arrastrar su rank y su "antes" inflado. Queda
+                # registrado para poder revisar cuántos caen acá.
+                hector2_db.registrar_anuncio(
+                    con_h2, origen="aliado", canal=canal_id, tienda=r["tienda"],
+                    url=r["url"], nombre=r.get("nombre"),
+                    caida_declarada=r["caida_declarada"],
+                    veredicto=r["veredicto"], topico=None, enviado=False,
+                    texto=texto)
+                print("⏭️  sin datos para armar el aviso: %s..."
+                      % texto[:50].replace("\n", " "))
+                return
 
-            a_enviar = texto
-            if r["veredicto"] != "confirmado":
-                a_enviar = "🔎 <i>sin verificar del todo</i>\n%s" % texto
+            a_enviar, caida, precio, referencia, historico = armado
+
+            # El tópico sale de la caída REAL, salvo en los canales que ya
+            # son de una categoría (Supermercado, Tecno, Vuelos, Hogar): ahí
+            # el canal sí sabe algo que el porcentaje no dice.
+            es_categoria = any(_en_lista(event.chat_id, username, v)
+                               for v in CATEGORIAS_PROPIAS)
+            topico_final = topico if es_categoria else (
+                _topico_por_caida(caida) or topico)
+
+            umbral = hector2_db.umbral_actual(con_h2, str(topico_final))
+            if r["puntaje"] < umbral and topico_dudosos:
+                topico_final = topico_dudosos
 
             _enviar_a_ratia(a_enviar, topico_final)
             hector2_db.registrar_mensaje(
@@ -610,8 +806,16 @@ def main():
                 fuente=r["fuente"], veredicto=r["veredicto"], motivo=r["motivo"],
                 topico_original=str(topico), topico_final=str(topico_final),
                 texto_muestra=texto)
-            print("reenviado (topico %s, %s): %s..." % (
-                topico_final, r["veredicto"], texto[:50].replace("\n", " ")))
+            hector2_db.registrar_anuncio(
+                con_h2, origen="aliado", canal=canal_id, tienda=r["tienda"],
+                url=r["url"], nombre=r.get("nombre"), precio=precio,
+                referencia=referencia, caida=caida,
+                caida_declarada=r["caida_declarada"], historico=historico,
+                veredicto=r["veredicto"], topico=topico_final, enviado=True,
+                texto=a_enviar)
+            print("reenviado (topico %s, %.0f%%, %s): %s..." % (
+                topico_final, (caida or 0) * 100, r["veredicto"],
+                (r.get("nombre") or texto)[:50].replace("\n", " ")))
 
     print("Escuchando %d canal(es): %s" % (len(canales), ", ".join(str(c) for c in canales)))
     # NO se llama a client.start() acá -- ya está conectado y autorizado

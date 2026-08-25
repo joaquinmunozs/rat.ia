@@ -149,14 +149,14 @@ class TestCruceConBaseHector(unittest.TestCase):
     def test_el_jugo_en_caja_se_descarta(self):
         # Siempre costó $400, con 8 dias de historial real detras.
         self._sembrar("https://prueba.cl/jugo", 400, hace_dias=8)
-        veredicto, caida, motivo = f.cruzar_con_base_hector(
+        veredicto, caida, motivo, _ref = f.cruzar_con_base_hector(
             self.con, "https://prueba.cl/jugo", "prueba.cl", "Jugo en caja",
             400, ahora=self.ahora)
         self.assertEqual(veredicto, "descartado")
 
     def test_caida_real_se_confirma(self):
         self._sembrar("https://prueba.cl/notebook", 500_000, hace_dias=8)
-        veredicto, caida, motivo = f.cruzar_con_base_hector(
+        veredicto, caida, motivo, _ref = f.cruzar_con_base_hector(
             self.con, "https://prueba.cl/notebook", "prueba.cl", "Notebook",
             150_000, ahora=self.ahora)
         self.assertEqual(veredicto, "confirmado")

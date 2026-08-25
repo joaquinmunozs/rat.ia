@@ -16,12 +16,19 @@ El "rank" no es decoración: ordena de un vistazo qué tan grande es el hallazgo
 y es lo que hace que alguien abra el mensaje en vez de ignorarlo. Sale del
 porcentaje de caída, no se asigna a mano.
 
-CUATRO TÓPICOS, Y UN MENSAJE PUEDE IR A DOS
+CINCO TÓPICOS, Y UN MENSAJE PUEDE IR A DOS
 ------------------------------------------------------------------------------
-  🚨 Errores de precio  -> caída 70% a 99%   (cualquier producto)
+  🚨 Errores de precio  -> caída 85% a 99%   (cualquier producto)
+  🏷️ Ofertas 70%        -> caída 70% a 85%   (cualquier producto)
   🏷️ Ofertas reales     -> caída 40% a 70%   (cualquier producto)
   📱 Electrónicos       -> caída 35% a 70%   (solo electrónica)
   🏠 Hogar              -> caída 35% a 70%   (solo hogar)
+
+Los dos primeros eran UNO solo (70%-99%) hasta el 25-ago-2026. Se partieron
+en `UMBRAL_ERROR_GRAVE` porque mezclaban dos cosas que el suscriptor vive
+distinto: un -72% es una oferta muy buena que la tienda quiso poner, un -93%
+es un error que se corrige en minutos. Ver el comentario de esa constante en
+`baseprecios`.
 
 Los dos primeros van separados a propósito: quien paga por errores de precio
 no quiere que le llegue una oferta del 55% mezclada, y quien busca ofertas no
@@ -88,6 +95,19 @@ RANGOS = (
 
 def _plata(n):
     return "$" + format(int(n), ",d").replace(",", ".")
+
+
+def _fecha(ts):
+    """(Claude) Un epoch como "14/08" — día y mes, sin año ni hora.
+
+    La ventana del historial son 30 días, así que el año nunca desambigua
+    nada y la hora es ruido: lo que el suscriptor necesita saber es si ese
+    precio fue la semana pasada o hace un mes.
+    """
+    try:
+        return time.strftime("%d/%m", time.localtime(int(ts)))
+    except (ValueError, OSError, TypeError):
+        return "?"
 
 
 def _rango(caida):
@@ -167,7 +187,20 @@ def destinos(det):
     if det["tipo"] == baseprecios.ERROR:
         # Sobre 70% es error de precio y va SOLO ahí: no se duplica a la
         # categoría, porque el tope de esos tópicos es 69%.
-        ids.append(os.environ.get("VIGIA_TOPICO_ERRORES"))
+        #
+        # (Claude, 25-ago-2026) Pero "ahí" ahora son DOS tópicos, partidos en
+        # 85% -- ver `UMBRAL_ERROR_GRAVE` en baseprecios. El de 70-85% es el
+        # tópico VIEJO (mismo id de Telegram, sólo renombrado a "Ofertas
+        # 70%"), así que `VIGIA_TOPICO_OFERTAS70` cae de vuelta en
+        # `VIGIA_TOPICO_ERRORES` si todavía no está configurada: mientras la
+        # variable nueva no exista, el comportamiento es idéntico al de antes
+        # y no se pierde ningún aviso.
+        if det["caida"] >= baseprecios.UMBRAL_ERROR_GRAVE:
+            ids.append(os.environ.get("VIGIA_TOPICO_ERRORES_GRAVES")
+                       or os.environ.get("VIGIA_TOPICO_ERRORES"))
+        else:
+            ids.append(os.environ.get("VIGIA_TOPICO_OFERTAS70")
+                       or os.environ.get("VIGIA_TOPICO_ERRORES"))
     else:
         # UN SOLO DESTINO POR HALLAZGO (11-ago-2026)
         #
@@ -254,12 +287,27 @@ def armar_texto(det, tienda):
     if habitual and habitual > det["referencia"]:
         lineas.insert(4, "<i>habitualmente %s</i>" % _plata(habitual))
 
-    if det.get("historico"):
+    if det.get("historico_fechas") or det.get("historico"):
         lineas += ["", "<b>Precio histórico</b> 📉"]
         # El historial viene de más reciente a más antiguo, que es como lo
         # muestran los canales de referencia.
-        for p in det["historico"][:4]:
-            lineas.append("  %s" % _plata(p))
+        #
+        # (Claude, 25-ago-2026) CADA PRECIO CON SU FECHA, NO SUELTO.
+        # Un "$1.489.990" sin fecha no distingue un precio de ayer de uno de
+        # hace tres semanas, y esa distinción es justo la que separa una
+        # referencia real de una inventada -- el problema concreto que tiene
+        # el canal del aliado, cuyas barridas históricas a veces son de horas
+        # antes. Mostrar la fecha hace la promesa auditable por el suscriptor
+        # mismo: si dice "hace 20 días costaba X", puede ir a verificarlo.
+        con_fecha = det.get("historico_fechas")
+        if con_fecha:
+            for p, desde in con_fecha[:4]:
+                lineas.append("  %s   <i>%s</i>" % (_plata(p), _fecha(desde)))
+        else:
+            for p in det["historico"][:4]:
+                lineas.append("  %s" % _plata(p))
+        lineas.append("<i>sondeo propio de los últimos %d días</i>"
+                      % baseprecios.VENTANA_HISTORIAL_DIAS)
     elif not det.get("con_historial"):
         # Honestidad: si la referencia es la foto del día uno y no un historial
         # acumulado, el mensaje lo dice. Un "-80%" sin respaldo es justo lo que
@@ -344,17 +392,26 @@ def enviar_hallazgos(con, hallazgos):
             texto += ("\n\n<i>Disponible en %d variantes "
                       "(color o medida).</i>" % variantes)
         llego = False
+        topicos_usados = []
         for topico in destinos(det):
             if _enviar(texto, topico):
                 llego = True
                 enviados += 1
+                topicos_usados.append(str(topico))
                 # Telegram tumba al bot si se le mandan más de ~20 mensajes
                 # por minuto al mismo chat.
                 time.sleep(INTERVALO_TELEGRAM)
         if llego:
             for hermana in hallazgos:
                 if _clave_variante(hermana) == _clave_variante(det):
-                    baseprecios.anotar_alerta(con, hermana)
+                    # (Claude, 25-ago-2026) Se archiva el aviso completo, no
+                    # sólo sus números: el texto que salió, el tópico y el
+                    # sondeo que lo respaldaba. Es lo que permite revisar
+                    # meses después si un aviso estuvo bien o mal sin tener
+                    # que reconstruirlo de memoria.
+                    baseprecios.anotar_alerta(
+                        con, hermana, tienda=det.get("tienda"),
+                        topico=",".join(topicos_usados), texto=texto)
     con.commit()
     return enviados
 

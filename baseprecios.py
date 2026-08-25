@@ -47,6 +47,7 @@ Esa distinción es el corazón del producto: la tienda dice "70% dcto" sobre un
 precio de referencia que nunca cobró. Acá el porcentaje se calcula contra lo
 que ESE producto costó de verdad en el tiempo.
 """
+import json
 import os
 import sqlite3
 import statistics
@@ -59,6 +60,26 @@ RUTA = os.environ.get("VIGIA_DB", os.path.join(
 
 UMBRAL_ERROR = 0.70        # 70%+ bajo la referencia = error de precio
 UMBRAL_OFERTA = 0.40       # 40%-70% = oferta real, para cualquier producto
+
+# (Claude, 25-ago-2026) DOS TRAMOS DENTRO DEL 70%+, PEDIDO DE JOAQUÍN
+#
+# El tópico de errores recibía TODO lo de 70% para arriba y terminó siendo
+# dos cosas distintas mezcladas: la oferta muy buena (un -72% real, que se
+# agota en el día pero es un precio que la tienda quiso poner) y el error
+# de verdad (un -93%, que alguien cargó mal y se corrige en minutos). Quien
+# sigue el segundo no quiere que le suene el teléfono por el primero.
+#
+# Ahora son dos tópicos, y el corte está acá y en un solo lado:
+#     70% - 85%   ->  🏷️ Ofertas 70%        (el tópico viejo, renombrado)
+#     85% - 99%   ->  🚨 Errores de precio  (tópico nuevo)
+#
+# `UMBRAL_ERROR` NO se movió a propósito: sigue siendo lo que decide el
+# `tipo` ERROR en `evaluar` (y con él el piso de plata que no aplica, y que
+# un hallazgo sin historial pueda salir igual). Esto de acá abajo es sólo
+# ruteo de tópicos, no reclasificación -- mover `UMBRAL_ERROR` cambiaría el
+# comportamiento de cuatro reglas más que no tienen nada que ver con a qué
+# hilo de Telegram llega el mensaje.
+UMBRAL_ERROR_GRAVE = 0.85
 
 # EL FILTRO NO ES EL PRECIO, ES EL AHORRO (11-ago-2026)
 #
@@ -236,6 +257,22 @@ def _migrar(con):
             # Se llena sola cuando se vuelve a leer esa URL y el precio ya
             # recuperó su referencia — ver `marcar_si_restablecido`.
             ("restablecido_en", "INTEGER"),
+            # (Claude, 25-ago-2026) EL ARCHIVO DE LO QUE SE ANUNCIÓ.
+            #
+            # `alertas` guardaba los números pero no el aviso: sin el nombre,
+            # la tienda ni el sondeo que lo respaldaba, revisar meses después
+            # si un aviso estuvo bien o mal obligaba a cruzarlo a mano contra
+            # `precios` — y para entonces esos tramos ya rotaron fuera de la
+            # ventana de 30 días, así que la evidencia que sostenía el aviso
+            # simplemente no existe más.
+            #
+            # `historico` es el JSON [[precio, epoch], ...] tal como salió en
+            # el mensaje: congela la evidencia en el momento de anunciar.
+            ("nombre", "TEXT"),
+            ("tienda", "TEXT"),
+            ("topico", "TEXT"),
+            ("historico", "TEXT"),
+            ("texto", "TEXT"),
         ],
     }
     for tabla, columnas in faltantes.items():
@@ -628,6 +665,14 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None, diag=
         "categoria": categoria,
         "con_historial": con_historial,
         "historico": previos[:4],
+        # (Claude) El mismo historial pero CON LA FECHA de cada tramo, que es
+        # lo que el aviso muestra ahora. Un "$1.489.990" suelto no dice si
+        # ese precio fue ayer o hace tres semanas, y esa diferencia es
+        # exactamente la que separa una referencia buena de una inventada
+        # -- el reclamo real contra el canal del aliado. Se agrega como
+        # clave NUEVA en vez de cambiar `historico`, para no romper a
+        # ningún llamador que ya lo consuma como lista de números.
+        "historico_fechas": [(p, desde) for p, desde, _h in ts[:4]],
         # El precio HABITUAL (mediana ponderada por tiempo). No se usa para
         # calcular la caída —ver el comentario en `evaluar`— pero sirve para
         # mostrarlo: "bajó 62% contra su mínimo, y 75% contra lo que suele
@@ -636,12 +681,23 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None, diag=
     }
 
 
-def anotar_alerta(con, det, ahora=None):
+def anotar_alerta(con, det, ahora=None, tienda=None, topico=None, texto=None):
+    """Deja constancia del aviso.
+
+    (Claude, 25-ago-2026) Ahora guarda además QUÉ se anunció y con qué
+    evidencia: nombre, tienda, tópico, el sondeo congelado y el mensaje tal
+    como salió. Los tres parámetros nuevos son opcionales para no romper a
+    ningún llamador que ya exista.
+    """
     con.execute(
-        "INSERT INTO alertas (url, tipo, precio, referencia, caida, avisado_en) "
-        "VALUES (?,?,?,?,?,?)",
+        "INSERT INTO alertas (url, tipo, precio, referencia, caida, avisado_en, "
+        "nombre, tienda, topico, historico, texto) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (det["url"], det["tipo"], det["precio"], det["referencia"],
-         det["caida"], int(ahora or time.time())))
+         det["caida"], int(ahora or time.time()),
+         det.get("nombre"), tienda,
+         str(topico) if topico is not None else None,
+         json.dumps(det.get("historico_fechas") or [], separators=(",", ":")),
+         texto))
 
 
 MIN_CATALOGO_PARA_TASA = 500   # bajo esto, un puñado de errores da un % ruidoso
