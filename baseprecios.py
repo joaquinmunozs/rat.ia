@@ -681,6 +681,37 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None, diag=
     }
 
 
+def alertas_recientes(con, desde_epoch):
+    """Los avisos propios de Héctor desde `desde_epoch` -- la materia prima
+    del selector de Instagram (`ratia_seleccion.py`).
+
+    (Claude, 25-ago-2026) Devuelve el mismo vocabulario que
+    `hector2_db.candidatos_pendientes` (url/tienda/nombre/precio/referencia/
+    caida/primera_vez_vista/fuente) para que el selector no tenga que saber
+    de dónde vino cada fila -- las dos fuentes (Héctor propio y el aliado
+    vía Hector2) se ven idénticas desde ahí.
+
+    TOLERANTE A UN RESPALDO VIEJO: `nombre`/`tienda` se agregaron a `alertas`
+    recién esta madrugada. El respaldo que descarga `descargar_base_hector`
+    es de solo lectura -- no se le puede correr `_migrar()` encima -- y viene
+    de la ÚLTIMA corrida real de `hector.yml`, que puede ser anterior a este
+    cambio. Sin las columnas, se devuelven filas con `nombre`/`tienda` en
+    `None`: no rompe, simplemente esas filas no van a calificar para
+    Instagram hasta que el respaldo se regenere con el código nuevo.
+    """
+    cols = {f[1] for f in con.execute("PRAGMA table_info(alertas)")}
+    tiene_nombre = "nombre" in cols and "tienda" in cols
+    campos = "url, tienda, nombre, precio, referencia, caida, avisado_en" if tiene_nombre \
+        else "url, NULL AS tienda, NULL AS nombre, precio, referencia, caida, avisado_en"
+    filas = con.execute(
+        "SELECT %s FROM alertas WHERE avisado_en >= ? ORDER BY avisado_en DESC"
+        % campos, (int(desde_epoch),)).fetchall()
+    return [{"url": f["url"], "tienda": f["tienda"], "nombre": f["nombre"],
+             "precio": f["precio"], "referencia": f["referencia"],
+             "caida": f["caida"], "primera_vez_vista": f["avisado_en"],
+             "fuente": "hector"} for f in filas]
+
+
 def anotar_alerta(con, det, ahora=None, tienda=None, topico=None, texto=None):
     """Deja constancia del aviso.
 

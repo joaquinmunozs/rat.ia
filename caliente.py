@@ -70,7 +70,7 @@ IMANES = re.compile(
     r"rtx|geforce|radeon\s*rx|ryzen|core\s*i[579]|"
     r"notebook|laptop|thinkpad|rog\b|legion\b|"
     # electro de marca fuerte
-    r"dyson|gopro|dji|drone|roomba|"
+    r"dyson|gopro|dji|drone|roomba|starlink|"
     r"airfryer|freidora\s*de\s*aire|"
     # ropa y calzado deportivo de marca — reventa clásica
     r"nike|adidas|jordan|yeezy|new\s*balance|asics|puma|under\s*armour|"

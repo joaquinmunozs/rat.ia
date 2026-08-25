@@ -60,35 +60,61 @@ def _pedir(ruta: str, cuerpo: dict | None = None, metodo: str = "GET") -> dict:
             f"Blotato {e.code}: {e.read().decode('utf-8', 'replace')[:300]}") from None
 
 
-def caption(nombre: str, antes: float, ahora: float, url_producto: str = "") -> str:
-    """El texto del post.
+def caption_oferta(nombre: str, tienda: str) -> str:
+    """El texto del post para el carril de OFERTAS.
 
-    Sin promesas de disponibilidad ni urgencia inventada ("¡últimas horas!"):
-    Rat.IA no controla el stock de la tienda y anunciar una urgencia que no
-    existe es lo que hace que la gente deje de creerle a la cuenta.
+    (Claude, 25-ago-2026) Pedido explícito de Joaquín: SIN precio y SIN
+    link. El precio ya está en la pieza (la imagen lo muestra grande); el
+    link nunca va en la descripción -- Instagram penaliza el alcance de los
+    posts con link saliente, y un link en el caption tampoco genera nada.
+
+    El pedido es que la persona COMENTE (eso sí suma alcance) y reciba el
+    link por DM -- ver `ratia_manychat.py`. El caption entonces sólo tiene
+    que dar dos datos (dónde está, qué es) y el gancho para comentar.
     """
-    desc = max(0, round((1 - ahora / antes) * 100)) if antes else 0
-    p = ratia_pieza_ia._plata
-    lineas = [
-        f"🐀 {nombre}",
-        "",
-        f"Antes {p(antes)} → ahora {p(ahora)} ({desc}% menos)",
-        "",
-        "Precio detectado automáticamente. Verifica siempre en la tienda "
-        "antes de comprar: puede cambiar o agotarse.",
-    ]
-    if url_producto:
-        lineas += ["", url_producto]
-    lineas += ["", "#ofertas #chile #descuentos"]
-    return "\n".join(lineas)
+    return (
+        f"🐀 {nombre}\n"
+        f"📍 Disponible en {tienda}\n\n"
+        "¿Te lo mando? Comenta \"OFERTA\" 👇 y te paso el link por DM.\n\n"
+        "#ofertas #chile #descuentos"
+    )
+
+
+def caption_error(nombre: str, tienda: str) -> str:
+    """El texto del post para el carril de ERRORES DE PRECIO.
+
+    (Claude, 25-ago-2026) Mismo principio de "sin link en la descripción",
+    pero el framing es distinto: acá SÍ se avisa que el DM va a pedir el
+    correo antes del link -- decirlo de entrada evita que alguien comente,
+    no reciba el link al toque, y piense que el bot está roto.
+
+    Nunca "¡ÚLTIMAS HORAS!" ni presión inventada: Rat.IA no controla si la
+    tienda corrige el precio en 2 minutos o en 2 horas, y prometer algo que
+    no se puede cumplir es lo que hace que la cuenta deje de darle
+    credibilidad a la palabra "error de precio".
+    """
+    return (
+        f"🚨 ERROR DE PRECIO — {nombre}\n"
+        f"📍 {tienda}\n\n"
+        "Puede durar minutos o corregirse en cualquier momento — comenta "
+        "\"ERROR\" 👇 y te lo mandamos al DM apenas dejes tu correo (así "
+        "también te avisamos si vuelve a pasar).\n\n"
+        "#errordeprecio #chile #ofertas"
+    )
 
 
 def publicar_oferta(nombre_producto: str, precio_antes: float, precio_ahora: float,
-                    foto: str | bytes, cuenta_id: str, pagina_id: str | None = None,
-                    plataforma: str = "instagram", url_producto: str = "",
+                    foto: str | bytes, cuenta_id: str, tienda: str,
+                    tipo: str = "oferta", pagina_id: str | None = None,
+                    plataforma: str = "instagram",
                     color: str = "negro", confirmado: bool = False,
                     log=print) -> dict:
     """Arma la pieza y (si `confirmado`) la publica.
+
+    `tipo` decide el caption: "oferta" (sin correo, link directo por DM) o
+    "error" (el DM pide correo antes del link) -- ver `caption_oferta` /
+    `caption_error`. `ratia_seleccion.Candidato.tipo` ya viene en ese mismo
+    vocabulario, así que el llamador real no tiene que traducir nada.
 
     Devuelve un dict con `pieza` (bytes), `caption` y, si se publicó,
     `submission`. Con `confirmado=False` devuelve todo listo pero
@@ -102,7 +128,8 @@ def publicar_oferta(nombre_producto: str, precio_antes: float, precio_ahora: flo
         return {"ok": False, "publicado": False,
                 "motivo": "no se pudo generar/verificar la pieza"}
 
-    texto = caption(nombre_producto, precio_antes, precio_ahora, url_producto)
+    texto = (caption_error(nombre_producto, tienda) if tipo == "error"
+             else caption_oferta(nombre_producto, tienda))
 
     if not confirmado:
         log("[ratia-pub] pieza lista. NO se publicó: falta confirmado=True.")

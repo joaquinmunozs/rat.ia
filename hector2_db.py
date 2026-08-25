@@ -134,6 +134,36 @@ CREATE TABLE IF NOT EXISTS precios_vistos (
     UNIQUE (url, precio, visto_en)
 );
 CREATE INDEX IF NOT EXISTS precios_vistos_url_idx ON precios_vistos (url, visto_en);
+
+-- ── LA COLA DE INSTAGRAM (Claude, 25-ago-2026) ──────────────────────────
+--
+-- Un candidato entra apenas se avisa por Telegram (`alertas` de Héctor o
+-- `anuncios` del aliado) y sale cuando se publica, se descarta o vence. Ver
+-- `ratia_seleccion.py` para las reglas de cuándo cada uno queda "elegible".
+--
+-- UNIQUE(url, tipo): el mismo producto puede aparecer varias veces en el
+-- Telegram (Héctor lo vuelve a ver en la barrida siguiente); no se vuelve a
+-- evaluar como candidato nuevo cada vez, gana la primera vez que se vio.
+CREATE TABLE IF NOT EXISTS ig_candidatos (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    url                TEXT NOT NULL,
+    tipo               TEXT NOT NULL,    -- oferta / error
+    fuente             TEXT,             -- hector / aliado
+    tienda             TEXT,
+    nombre             TEXT,
+    precio             INTEGER,
+    referencia         INTEGER,
+    caida              REAL,
+    primera_vez_vista  INTEGER NOT NULL,
+    estado             TEXT NOT NULL DEFAULT 'pendiente',
+                        -- pendiente / publicado / descartado / vencido
+    motivo_descarte    TEXT,
+    publicado_en       INTEGER,
+    post_id            TEXT,             -- id que devuelve Blotato
+    creado_en          INTEGER NOT NULL,
+    UNIQUE (url, tipo)
+);
+CREATE INDEX IF NOT EXISTS ig_candidatos_estado_idx ON ig_candidatos (estado, tipo);
 """
 
 
@@ -303,6 +333,95 @@ def ajustar_umbral(con, topico, enviados_24h, piso_objetivo, techo_objetivo, aho
         (topico, nuevo, ahora))
     con.commit()
     return nuevo
+
+
+def anuncios_recientes(con, desde_epoch):
+    """Los reenvíos del aliado ya publicados en el Telegram, desde
+    `desde_epoch` -- la otra mitad de la materia prima del selector de
+    Instagram (ver `baseprecios.alertas_recientes` para la de Héctor).
+
+    Sólo `enviado=1`: un anuncio descartado nunca llegó al Telegram, así que
+    "primera_vez_vista" no aplicaría."""
+    filas = con.execute(
+        "SELECT url, tienda, nombre, precio, referencia, caida, creado_en "
+        "FROM anuncios WHERE enviado=1 AND creado_en >= ? "
+        "ORDER BY creado_en DESC", (int(desde_epoch),)).fetchall()
+    return [{"url": f["url"], "tienda": f["tienda"], "nombre": f["nombre"],
+             "precio": f["precio"], "referencia": f["referencia"],
+             "caida": f["caida"], "primera_vez_vista": f["creado_en"],
+             "fuente": "aliado"} for f in filas]
+
+
+# ── COLA DE INSTAGRAM ────────────────────────────────────────────────────
+
+def registrar_candidato(con, *, url, tipo, fuente, tienda, nombre, precio,
+                         referencia, caida, primera_vez_vista, ahora=None):
+    """Anota un candidato la PRIMERA vez que se ve. Si ya existía (mismo
+    url+tipo), no lo toca -- `INSERT OR IGNORE` conserva el
+    `primera_vez_vista` original, que es el que cuenta para la demora."""
+    ahora = int(ahora if ahora is not None else time.time())
+    con.execute(
+        "INSERT OR IGNORE INTO ig_candidatos (url, tipo, fuente, tienda, "
+        "nombre, precio, referencia, caida, primera_vez_vista, estado, "
+        "creado_en) VALUES (?,?,?,?,?,?,?,?,?,'pendiente',?)",
+        (url, tipo, fuente, tienda, nombre,
+         int(precio) if precio else None, int(referencia) if referencia else None,
+         caida, int(primera_vez_vista), ahora))
+    con.commit()
+
+
+def candidatos_pendientes(con, desde_epoch):
+    """Los que siguen 'pendiente' y son recientes -- no tiene sentido traer
+    candidatos de hace una semana en cada pasada."""
+    filas = con.execute(
+        "SELECT url, tipo, fuente, tienda, nombre, precio, referencia, "
+        "caida, primera_vez_vista FROM ig_candidatos "
+        "WHERE estado='pendiente' AND primera_vez_vista >= ?",
+        (int(desde_epoch),)).fetchall()
+    return [dict(f) for f in filas]
+
+
+def publicados_hoy(con, desde_medianoche_epoch):
+    """Cuántos de cada tipo se publicaron desde la medianoche de Chile.
+
+    Se pide el epoch YA CALCULADO por el llamador (que sabe la zona horaria)
+    en vez de calcularlo acá -- este módulo no depende de `ratia_seleccion`
+    para no crear un ciclo de imports.
+    """
+    filas = con.execute(
+        "SELECT tipo, COUNT(*) AS n FROM ig_candidatos "
+        "WHERE estado='publicado' AND publicado_en >= ? GROUP BY tipo",
+        (int(desde_medianoche_epoch),)).fetchall()
+    return {f["tipo"]: f["n"] for f in filas}
+
+
+def marcar_publicado(con, url, tipo, post_id=None, ahora=None):
+    ahora = int(ahora if ahora is not None else time.time())
+    con.execute(
+        "UPDATE ig_candidatos SET estado='publicado', publicado_en=?, "
+        "post_id=? WHERE url=? AND tipo=?", (ahora, post_id, url, tipo))
+    con.commit()
+
+
+def marcar_descartado(con, url, tipo, motivo):
+    con.execute(
+        "UPDATE ig_candidatos SET estado='descartado', motivo_descarte=? "
+        "WHERE url=? AND tipo=?", (motivo, url, tipo))
+    con.commit()
+
+
+def vencer_candidatos(con, ahora, vence_oferta_seg, vence_error_seg):
+    """Pasa a 'vencido' lo pendiente que ya se pasó de su ventana. Se corre
+    una vez por pasada del selector -- no hace falta un cron aparte."""
+    con.execute(
+        "UPDATE ig_candidatos SET estado='vencido' WHERE estado='pendiente' "
+        "AND tipo='oferta' AND primera_vez_vista + ? < ?",
+        (vence_oferta_seg, int(ahora)))
+    con.execute(
+        "UPDATE ig_candidatos SET estado='vencido' WHERE estado='pendiente' "
+        "AND tipo='error' AND primera_vez_vista + ? < ?",
+        (vence_error_seg, int(ahora)))
+    con.commit()
 
 
 def contar_enviados_24h(con, topico, ahora=None):
