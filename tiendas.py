@@ -93,7 +93,6 @@ TIENDAS = [
     {"dominio": "crandon.cl",       "nivel": LIMPIA, "rubro": "accesorios"},
     {"dominio": "converse.cl",      "nivel": LIMPIA, "rubro": "calzado"},
     {"dominio": "kmarket.cl",       "nivel": LIMPIA, "rubro": "retail"},
-    {"dominio": "buscalibre.cl",    "nivel": LIMPIA, "rubro": "libros"},
     {"dominio": "mall.cl",          "nivel": LIMPIA, "rubro": "marketplace"},
     {"dominio": "dijon.com",        "nivel": LIMPIA, "rubro": "hogar"},
     {"dominio": "tecnored.cl",      "nivel": LIMPIA, "rubro": "tecnologia"},
@@ -117,7 +116,6 @@ TIENDAS = [
     {"dominio": "hushpuppies.cl",   "nivel": MEDIA, "rubro": "calzado"},
     {"dominio": "vans.cl",          "nivel": MEDIA, "rubro": "calzado"},
     {"dominio": "underarmour.cl",   "nivel": MEDIA, "rubro": "deporte"},
-    {"dominio": "antartica.cl",     "nivel": MEDIA, "rubro": "libros"},
     {"dominio": "sportline.cl",     "nivel": MEDIA, "rubro": "deporte"},
     {"dominio": "homy.cl",          "nivel": MEDIA, "rubro": "hogar"},
     {"dominio": "winnerchile.cl",   "nivel": MEDIA, "rubro": "deporte"},
@@ -187,6 +185,31 @@ TIENDAS = [
     # sodimac.cl  -> su sitemap trae UNA sola URL, la portada. No publican.
     # imperial.cl -> sin sitemap de fichas.
 ]
+
+
+# ── LIBROS: FUERA, PARA SIEMPRE (Claude, 25-ago-2026) ────────────────────
+#
+# `buscalibre.cl` y `antartica.cl` salieron de la lista por pedido explícito
+# de Joaquín: "quites todos los libros de hector 2 y hector en el grupo
+# telegram y nunca mas avisaremos ofertas ni errores de precios con ellos".
+#
+# No es una preferencia nueva -- es el final de un problema que ya venía
+# documentado. Antártica sola tiene ~56.500 fichas, y ese volumen se colaba
+# solo en la barrida: el 7-ago-2026 Joaquín reportó que las alertas reales
+# que mandó Héctor eran de libros, no de lo que valía la pena avisar. En su
+# momento se parchó en `caliente.IMANES` (un libro nunca entra a la lista
+# caliente), pero la barrida normal los seguía leyendo y avisando.
+#
+# Sacarlos de acá los saca de TODO de una vez: `vigia.por_nivel` no los
+# recorre, `categorias` no les asigna rubro y `hector2_filtro` deja de
+# reconocerlos como tienda conocida. El bloqueo por título en
+# `hector2_filtro.RUIDO_IRRELEVANTE` (libro/ebook/revista/cómic/manga) sigue
+# ahí como segunda barrera para el reenvío del aliado, que publica libros de
+# tiendas que no son estas dos.
+#
+# ⚠️ Las fichas YA GUARDADAS en `precios.db` no se borran solas al sacar el
+# dominio de esta lista -- ver `limpiar_libros.py`, que las saca de la base
+# y evita que el vigilante siga avisando de lo que ya tenía cargado.
 
 
 def por_nivel(*niveles):

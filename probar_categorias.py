@@ -85,8 +85,13 @@ CASOS = [
      100_000, 60_000, ["4"]),                        # -40%: justo en el piso
     ("Zapatillas Nike Air Max 90", "falabella.com",
      100_000, 40_000, ["4"]),                        # -60%: solo ofertas
+    # (Claude, 25-ago-2026) Antes esperaba ["4"] (tópico Ofertas). Ahora
+    # NINGÚN tópico: las librerías se cortaron de raíz por pedido de Joaquín
+    # ("nunca más avisaremos ofertas ni errores de precios con ellos"), y el
+    # corte vive en `baseprecios.evaluar`, antes de que se decida el tópico.
+    # Ver `test_sin_libros.py`.
     ("Cien años de soledad", "antartica.cl",
-     20_000, 12_000, ["4"]),                         # -40% en un libro
+     20_000, 12_000, []),                            # -40% en un libro: no se avisa
 
     # ── Los que fallaron contra datos reales ─────────────────────────────
     #

@@ -303,7 +303,18 @@ def extraer_precios(texto):
     return precios
 
 
-def es_irrelevante(texto, rubro):
+def es_irrelevante(texto, rubro, url=None):
+    # (Claude, 25-ago-2026) LIBRERÍAS: NUNCA. Pedido de Joaquín, "nunca más
+    # avisaremos ofertas ni errores de precios con ellos".
+    #
+    # Se chequea por DOMINIO y no sólo por `rubro`, porque el rubro venía de
+    # `_DOMINIOS_HECTOR` -- y esos dominios ya salieron de `tiendas.py` en el
+    # mismo pedido, así que la rama de abajo dejó de dispararse sola. Sin
+    # esto, un reenvío del aliado con un link a Antártica pasaría: no calza
+    # con ninguna tienda conocida, y si el título no dice "libro" tampoco lo
+    # atrapa `RUIDO_IRRELEVANTE`.
+    if url and baseprecios.es_libreria(url):
+        return True, "librería (no se avisan libros)"
     if rubro == "libros":
         return True, "tienda de libros (%s)" % rubro
     if RUIDO_IRRELEVANTE.search(texto or ""):
@@ -465,7 +476,7 @@ def evaluar_mensaje(texto, canal, con_hector=None, verificar_vivo=True,
             esta_bloqueada(_dominio_de(u)) for u in urls):
         return _salida("descartado", "Amazon: no despacha a Chile", "bloqueada")
 
-    irrelevante, motivo_irrelevante = es_irrelevante(texto, rubro)
+    irrelevante, motivo_irrelevante = es_irrelevante(texto, rubro, url)
     if irrelevante:
         return _salida("descartado", motivo_irrelevante, "categoria")
 

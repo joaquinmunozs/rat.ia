@@ -52,6 +52,7 @@ import os
 import sqlite3
 import statistics
 import time
+from urllib.parse import urlparse
 
 import categorias
 
@@ -111,6 +112,26 @@ MIN_OBSERVACIONES = 5
 # dentro de `evaluar`. Siete días cubren un ciclo semanal completo del retail,
 # fin de semana incluido, que es cuando más se mueven los precios en Chile.
 DIAS_MINIMOS_HISTORIAL = 7
+
+
+# Librerías: se avisó de ellas hasta el 25-ago-2026 y se cortó por pedido
+# explícito ("nunca más"). Ver el bloque en `evaluar`. La lista vive acá y
+# no en `tiendas.py` justamente porque ya NO están en esa lista: esto tiene
+# que seguir funcionando cuando el dominio ya no existe en el catálogo.
+DOMINIOS_LIBRERIA = ("buscalibre.cl", "antartica.cl")
+
+
+def es_libreria(url):
+    """¿Esta URL es de una librería? Compara por sufijo de dominio, así
+    `www.antartica.cl` y `tienda.antartica.cl` cuentan, pero
+    `noantartica.cl` no -- el corte es siempre en un punto."""
+    try:
+        d = (urlparse(url or "").netloc or "").lower()
+    except ValueError:
+        return False
+    if d.startswith("www."):
+        d = d[4:]
+    return any(d == x or d.endswith("." + x) for x in DOMINIOS_LIBRERIA)
 
 
 def _dias_cubiertos(ts, ahora):
@@ -513,6 +534,22 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None, diag=
         if diag is not None:
             diag[motivo] = diag.get(motivo, 0) + 1
         return None
+
+    # ── LIBROS: NUNCA, POR NINGUNA VÍA (Claude, 25-ago-2026) ─────────────
+    #
+    # Pedido de Joaquín: "nunca mas avisaremos ofertas ni errores de precios
+    # con ellos". Los dominios ya salieron de `tiendas.py`, pero eso sólo
+    # evita LEERLOS de nuevo -- no borra las ~56.500 fichas de Antártica que
+    # ya están en `precios.db`, y el vigilante avisa recorriendo la base, no
+    # la lista de tiendas. Sin este corte, Héctor habría seguido mandando
+    # ofertas de libros durante semanas con los precios ya cargados.
+    #
+    # Va acá y no en el llamador porque `evaluar` es el ÚNICO punto por el
+    # que pasan las dos rutas (`vigia.py` la barrida y `vigilante.py` la
+    # lista caliente): un filtro en cualquier otro lado dejaría la otra
+    # puerta abierta.
+    if es_libreria(url):
+        return _marcar("libreria")
 
     ahora = int(ahora or time.time())
     ts = tramos(con, url, ahora=ahora)
