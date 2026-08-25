@@ -430,12 +430,12 @@ VALIDAR_CAMBIO_DESDE = 0.10
 MUESTRA_VALIDACION = 100       # una de cada 100 URLs siempre usa extractor completo
 
 
-def _parsear_rapido(html):
-    return extractor.extraer_rapido(html)
+def _parsear_rapido(html, url=None):
+    return extractor.extraer_rapido(html, url)
 
 
-def _parsear_completo(html):
-    return extractor.extraer(html)
+def _parsear_completo(html, url=None):
+    return extractor.extraer(html, url)
 
 
 _TELEMETRIA = {}
@@ -469,15 +469,15 @@ def _leer(tienda, url, esperado=None, pool=None):
     _medir(tienda, "red_ms", (time.perf_counter() - t_red) * 1000)
 
     t_parse = time.perf_counter()
-    rapido = (pool.submit(_parsear_rapido, html).result()
-              if pool else _parsear_rapido(html))
+    rapido = (pool.submit(_parsear_rapido, html, url).result()
+              if pool else _parsear_rapido(html, url))
     precio = int(rapido["precio"])
     cambio = (abs(precio - int(esperado)) / max(1, int(esperado))
               if esperado else 1.0)
     muestra = (zlib.crc32(url.encode("utf-8")) % MUESTRA_VALIDACION) == 0
     if cambio >= VALIDAR_CAMBIO_DESDE or muestra:
-        rapido = (pool.submit(_parsear_completo, html).result()
-                  if pool else _parsear_completo(html))
+        rapido = (pool.submit(_parsear_completo, html, url).result()
+                  if pool else _parsear_completo(html, url))
         rapido["validacion_completa"] = True
     _medir(tienda, "parse_ms", (time.perf_counter() - t_parse) * 1000)
     return rapido

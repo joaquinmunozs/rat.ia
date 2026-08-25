@@ -109,7 +109,7 @@ def leer(tienda, url):
         d = especial(url, _bajar)
         if d:
             return d
-    return extractor.extraer(_bajar(url))
+    return extractor.extraer(_bajar(url), url)
 
 
 # ── TRES DESENLACES, NO DOS (12-ago-2026) ──────────────────────────────────

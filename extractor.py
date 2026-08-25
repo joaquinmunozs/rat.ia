@@ -73,7 +73,45 @@ def _num(v):
     return n if PRECIO_MIN <= n <= PRECIO_MAX else None
 
 
-def _de_jsonld(html):
+def _ruta_de(url):
+    """La ruta de una URL, sin dominio ni query. Para comparar identidades."""
+    if not url:
+        return ""
+    sin_esquema = re.sub(r"^https?://[^/]+", "", str(url))
+    return sin_esquema.split("?")[0].split("#")[0].rstrip("/").lower()
+
+
+def _de_jsonld(html, url=None):
+    """Precio desde el JSON-LD de la ficha.
+
+    POR QUÉ IMPORTA `url` (24-ago-2026)
+    ------------------------------------------------------------------
+    Antes se devolvía el PRIMER `Product` con precio del bloque. En una
+    ficha que solo publica su propio producto eso está bien; en una que
+    además publica los "recomendados" en el mismo JSON-LD, el primero
+    puede ser un producto AJENO — y entonces se mide el precio de otra
+    cosa, con el nombre y la URL de esta.
+
+    Cómo se detectó, sin poder abrir la tienda: se compararon los cambios
+    de precio de una corrida real (`hector.yml` #32764015419). Lo normal
+    es que casi todos los precios de origen sean distintos entre sí —
+    spdigital.cl tuvo 47 valores distintos en 49 cambios. `bata.cl` tuvo
+    7 en 19, con el 63% arrancando del MISMO $22.990: decenas de fichas
+    distintas informando el mismo precio es la firma de estar leyendo
+    siempre el mismo nodo. En la misma corrida apareció además un
+    "$674 → $1.299" en una tienda de zapatos, que no es un precio real.
+
+    Con `url`, se elige el `Product` cuya propia `url`/`@id` calza con la
+    ficha que se está midiendo. Sin `url` (llamadores viejos) se conserva
+    EXACTAMENTE el comportamiento anterior: primero con precio.
+
+    Ojo con `hasVariant`: esas SÍ son el mismo producto (tallas, colores)
+    y siguen entrando como antes. Lo que se desempata acá son productos
+    distintos que comparten bloque.
+    """
+    objetivo = _ruta_de(url)
+    candidatos = []                  # [(calza_con_la_url, resultado)]
+
     for bloque in re.findall(
             r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', html, re.S | re.I):
         try:
@@ -120,14 +158,27 @@ def _de_jsonld(html):
                             break
             if precio:
                 disp = str(ofertas.get("availability") or "")
-                return {
+                res = {
                     "nombre": str(o.get("name") or "")[:120],
                     "precio": precio,
                     "hay_stock": "outofstock" not in disp.lower().replace("_", ""),
                     "fuente": "json-ld",
                     "imagen": _url_imagen(o.get("image")),
                 }
-    return None
+                # ¿Este nodo dice ser el producto de ESTA ficha?
+                propia = _ruta_de(o.get("url") or o.get("@id") or "")
+                calza = bool(objetivo and propia and propia == objetivo)
+                if calza:
+                    # Coincidencia exacta: no hay nada mejor que buscar.
+                    return res
+                candidatos.append((False, res))
+
+    if not candidatos:
+        return None
+    # Sin coincidencia por URL se conserva el comportamiento de siempre: el
+    # primero con precio. Cambiar eso rompería las tiendas que hoy funcionan
+    # bien y solo publican su propio producto.
+    return candidatos[0][1]
 
 
 def _url_imagen(valor):
@@ -197,7 +248,7 @@ _RUIDO = re.compile(
     r"installment|shipping|envio|env[íi]o", re.I)
 
 
-def _de_nextdata(html):
+def _de_nextdata(html, url=None):   # `url` no se usa acá; firma uniforme para ESTRATEGIAS
     m = re.search(
         r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
     if not m:
@@ -248,7 +299,7 @@ def _de_nextdata(html):
     return None
 
 
-def _de_meta(html):
+def _de_meta(html, url=None):   # `url` no se usa acá; firma uniforme para ESTRATEGIAS
     for patron in (r'property="product:price:amount"\s+content="([^"]+)"',
                    r'content="([^"]+)"\s+property="product:price:amount"',
                    r'name="twitter:data1"\s+content="([^"]+)"'):
@@ -262,7 +313,7 @@ def _de_meta(html):
     return None
 
 
-def _de_microdatos(html):
+def _de_microdatos(html, url=None):   # `url` no se usa acá; firma uniforme para ESTRATEGIAS
     for patron in (r'itemprop="price"[^>]*content="([^"]+)"',
                    r'content="([^"]+)"[^>]*itemprop="price"'):
         m = re.search(patron, html, re.I)
@@ -274,7 +325,7 @@ def _de_microdatos(html):
     return None
 
 
-def _de_atributos(html):
+def _de_atributos(html, url=None):   # `url` no se usa acá; firma uniforme para ESTRATEGIAS
     """Precio en atributos HTML tipo `data-price="12990.0"`.
 
     Lo usan las tiendas sobre Salesforce Commerce (Tricot, Hites). Va al final
@@ -300,7 +351,7 @@ def _de_atributos(html):
 _NEXT_STREAM = re.compile(r'"children":"((?:[^"\\]|\\.)*)","id":"(jsonld-[^"]+)"')
 
 
-def _de_next_streaming(html):
+def _de_next_streaming(html, url=None):   # `url` no se usa acá; firma uniforme para ESTRATEGIAS
     """JSON-LD inyectado por el streaming de Next.js (Paris y similares).
 
     Paris publica su JSON-LD, pero NO como un `<script application/ld+json>`
@@ -376,7 +427,7 @@ def _completar_imagen(elegido, hallazgos, html):
     return elegido
 
 
-def extraer_rapido(html):
+def extraer_rapido(html, url=None):
     """(codex) Primera estrategia válida; los cambios se confirman completos.
 
     Esta ruta es para precios que coinciden con el ya observado. Un cambio
@@ -387,7 +438,7 @@ def extraer_rapido(html):
                         % len(html or ""))
     for f in ESTRATEGIAS:
         try:
-            r = f(html)
+            r = f(html, url)
         except Exception:                              # noqa: BLE001
             continue
         if r:
@@ -395,8 +446,12 @@ def extraer_rapido(html):
     raise SinPrecio("ninguna estrategia encontró precio")
 
 
-def extraer(html):
+def extraer(html, url=None):
     """Devuelve {nombre, precio, hay_stock, fuente} o lanza SinPrecio.
+
+    `url` es OPCIONAL y solo desempata cuando el JSON-LD trae varios
+    productos distintos (ver `_de_jsonld`). Los llamadores que no la pasan
+    se comportan exactamente igual que antes.
 
     Se corren TODAS las estrategias, no solo hasta la primera que responda.
     El precio que se devuelve sigue siendo el de la estrategia más confiable
@@ -416,7 +471,7 @@ def extraer(html):
     hallazgos = []
     for f in ESTRATEGIAS:
         try:
-            r = f(html)
+            r = f(html, url)
         except Exception:            # noqa: BLE001 — una estrategia rota no
             continue                 # puede tumbar a las otras
         if r:
