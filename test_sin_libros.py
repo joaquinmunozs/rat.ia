@@ -74,5 +74,46 @@ class TestHector2NoReenviaLibros(unittest.TestCase):
         self.assertEqual(r["veredicto"], "descartado")
 
 
+
+
+class TestMatrizDelWorkflowSincronizada(unittest.TestCase):
+    """La matriz de `hector.yml` repite los dominios a mano. `tiendas.py`
+    aborta con SystemExit si HECTOR_TIENDAS nombra uno que no existe, asi
+    que una desincronizacion no da un aviso: revienta el shard entero.
+
+    Paso de verdad el 25-ago: al sacar buscalibre.cl y antartica.cl de
+    `tiendas.py`, los shards 0 y 3 quedaron rotos hasta que se saco tambien
+    de la matriz.
+    """
+
+    def _matriz(self):
+        import re
+        with open(".github/workflows/hector.yml", encoding="utf-8") as f:
+            texto = f.read()
+        return [m.group(1) for m in re.finditer(r'tiendas:\s*"([^"]+)"', texto)]
+
+    def test_todos_los_dominios_de_la_matriz_existen_en_tiendas_py(self):
+        conocidas = {t["dominio"] for t in tiendas.TIENDAS}
+        for i, lista in enumerate(self._matriz()):
+            for dom in [d.strip() for d in lista.split(",") if d.strip()]:
+                self.assertIn(dom, conocidas,
+                              "shard %d nombra '%s', que no esta en tiendas.py "
+                              "-- ese shard reventaria entero" % (i, dom))
+
+    def test_la_matriz_cubre_todas_las_tiendas_sin_repetir(self):
+        de_la_matriz = []
+        for lista in self._matriz():
+            de_la_matriz += [d.strip() for d in lista.split(",") if d.strip()]
+        self.assertEqual(len(de_la_matriz), len(set(de_la_matriz)),
+                         "hay un dominio repetido en dos shards")
+        self.assertEqual(set(de_la_matriz), {t["dominio"] for t in tiendas.TIENDAS},
+                         "la matriz y tiendas.py no cubren el mismo conjunto")
+
+    def test_ninguna_libreria_quedo_en_la_matriz(self):
+        for lista in self._matriz():
+            self.assertNotIn("antartica.cl", lista)
+            self.assertNotIn("buscalibre.cl", lista)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

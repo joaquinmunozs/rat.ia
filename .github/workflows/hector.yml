@@ -19,6 +19,10 @@ on:
         description: "Sacar precios por unidad de medida"
         type: boolean
         default: false
+      limpiar_libros:
+        description: "Sacar las fichas de librerias de la base (una sola vez)"
+        type: boolean
+        default: false
 
 concurrency:
   group: hector-barrida
@@ -32,16 +36,25 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 4
+      # ⚠️ ESTA LISTA ES UNA SEGUNDA FUENTE DE VERDAD, Y HAY QUE
+      # MANTENERLA A MANO SINCRONIZADA CON `tiendas.py`.
+      # `tiendas.py` aborta con SystemExit si HECTOR_TIENDAS nombra un
+      # dominio que ya no existe en su lista (a propósito: un dominio mal
+      # escrito dejaría esa tienda sin dueño y nadie lo notaría). Al sacar
+      # buscalibre.cl y antartica.cl de `tiendas.py` el 25-ago, los shards
+      # 0 y 3 reventaban enteros hasta que se sacaron también de acá.
+      # Comprobado antes de subirlo: `HECTOR_TIENDAS=...,antartica.cl python
+      # -c "import tiendas"` -> SystemExit.
       matrix:
         include:
           - shard: "0"
-            tiendas: "falabella.com,easy.cl,casaideas.cl,wei.cl,crandon.cl,kmarket.cl,buscalibre.cl"
+            tiendas: "falabella.com,easy.cl,casaideas.cl,wei.cl,crandon.cl,kmarket.cl"
           - shard: "1"
             tiendas: "hites.com,farmaciasahumada.cl,doite.cl,vans.cl,reuse.cl,jumbo.cl,dinsa.cl,dafiti.cl,converse.cl,mall.cl,dijon.com"
           - shard: "2"
             tiendas: "tricot.cl,santaisabel.cl,spdigital.cl,underarmour.cl,hushpuppies.cl,sportline.cl,adidas.cl,tecnored.cl,abc.cl,preunic.cl,pcfactory.cl,reifschneider.cl"
           - shard: "3"
-            tiendas: "salcobrand.cl,construmart.cl,bata.cl,antartica.cl,puma.cl,paris.cl,rosen.cl,winnerchile.cl,tottus.cl,homy.cl,ripley.cl,cruzverde.cl,decathlon.cl,apple.com/cl"
+            tiendas: "salcobrand.cl,construmart.cl,bata.cl,puma.cl,paris.cl,rosen.cl,winnerchile.cl,tottus.cl,homy.cl,ripley.cl,cruzverde.cl,decathlon.cl,apple.com/cl"
     permissions:
       contents: read
       actions: read
@@ -89,6 +102,17 @@ jobs:
       - name: Limpiar precios por unidad de medida
         if: github.event.inputs.limpiar_pum == 'true' && hashFiles('precios.db') != ''
         run: python -u limpiar_pum.py --confirmar
+
+      # Saca las ~56.500 fichas de librerias que quedaron cargadas de antes
+      # (Joaquin, 25-ago-2026: "nunca mas avisaremos ofertas ni errores de
+      # precios con ellos"). No es lo que impide el aviso -- de eso ya se
+      # encarga el corte en `baseprecios.evaluar`, que corre siempre. Esto
+      # es higiene: dejar de gastar lecturas en fichas que nunca van a
+      # avisar. Se corre a mano UNA vez; despues `tiendas.py` ya no las
+      # descubre de nuevo y `descartadas` impide que vuelvan a entrar.
+      - name: Limpiar fichas de librerias
+        if: github.event.inputs.limpiar_libros == 'true' && hashFiles('precios.db') != ''
+        run: python -u limpiar_libros.py --confirmar
 
       - name: Correr Héctor
         env:
