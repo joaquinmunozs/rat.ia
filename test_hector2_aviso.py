@@ -279,6 +279,56 @@ class TestArchivoDeAnuncios(unittest.TestCase):
         self.assertEqual(len(hector2_db.historico_propio(self.con, u)), 3)
 
 
+class TestElPrecioDeHoyNoEsSuPropiaReferencia(unittest.TestCase):
+    """La trampa del orden: en `_al_llegar` la observación se guarda ANTES de
+    armar el aviso, así que `historico_propio` ya devuelve el precio de hoy.
+    Si ese valor entrara en la referencia, la caída daría 0% -- el mismo error
+    que `baseprecios.evaluar` evita con su "llamar SIEMPRE antes de guardar".
+    """
+
+    def setUp(self):
+        import reenviar_ofertas
+        self.R = reenviar_ofertas
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.con = hector2_db.abrir(self.tmp.name)
+
+    def tearDown(self):
+        self.con.close()
+        try:
+            os.unlink(self.tmp.name)
+        except OSError:
+            pass
+
+    def test_no_se_referencia_a_si_mismo(self):
+        u = "https://tiendarara.cl/p/7"
+        ahora = int(time.time())
+        hector2_db.registrar_precio_visto(self.con, u, 20_000,
+                                          "declarado_aliado", visto_en=ahora - 9 * DIA)
+        # Lo que hace el handler justo antes de armar el aviso:
+        hector2_db.registrar_precio_visto(self.con, u, 5_000,
+                                          "declarado_aliado", visto_en=ahora)
+        r = {"url": u, "nombre": "Cosa", "tienda": None,
+             "precio_declarado": 5_000, "precio_real": None,
+             "referencia": None, "referencia_declarada": 99_999,
+             "caida_real": None, "historico": []}
+        _texto, caida, precio, referencia, _h = self.R._armar_aviso(r, self.con)
+        self.assertEqual(precio, 5_000)
+        # Gana la observación propia de $20.000, no el $99.999 del aliado
+        # ni el propio $5.000 recién guardado.
+        self.assertEqual(referencia, 20_000)
+        self.assertAlmostEqual(caida, 0.75)
+
+    def test_sin_sondeo_propio_lo_dice_en_el_mensaje(self):
+        r = {"url": "https://tiendarara.cl/p/8", "nombre": "Otra cosa",
+             "tienda": None, "precio_declarado": 5_000, "precio_real": None,
+             "referencia": None, "referencia_declarada": 20_000,
+             "caida_real": None, "historico": []}
+        texto, _c, _p, ref, _h = self.R._armar_aviso(r, self.con)
+        self.assertEqual(ref, 20_000)
+        self.assertIn("declarada por la fuente", texto)
+
+
 class TestBaseEnDiscoPersistente(unittest.TestCase):
     def test_usa_el_volumen_de_railway_si_existe(self):
         with tempfile.TemporaryDirectory() as d:
