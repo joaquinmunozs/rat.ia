@@ -135,6 +135,35 @@ CREATE TABLE IF NOT EXISTS precios_vistos (
 );
 CREATE INDEX IF NOT EXISTS precios_vistos_url_idx ON precios_vistos (url, visto_en);
 
+-- ── CONVENIOS BANCO-COMERCIO (Claude, 25-ago-2026) ──────────────────────
+--
+-- Una fila por convenio DISTINTO (`clave` = emisor+comercio+descuento+
+-- título, ver `convenios_pangui.ConvenioPangui`). Guarda el estado del
+-- ciclo de republicación (`convenios_ciclo.py`): cuándo se vio por primera
+-- vez, cuándo se recordó por última vez en Telegram, si ya salió en
+-- Instagram y si ya se le mandó el aviso de "última semana" ahí.
+CREATE TABLE IF NOT EXISTS convenios (
+    clave                       TEXT PRIMARY KEY,
+    emisor                      TEXT NOT NULL,
+    comercio                    TEXT NOT NULL,
+    categoria                   TEXT,
+    descuento                   INTEGER NOT NULL,
+    titulo                      TEXT NOT NULL,
+    dia_semana                  TEXT,
+    vigencia_hasta              TEXT,     -- ISO (YYYY-MM-DD) o NULL
+    es_recurrente               INTEGER NOT NULL DEFAULT 0,
+    verificado_recientemente    INTEGER NOT NULL DEFAULT 0,
+    url_fuente                  TEXT,
+    texto                       TEXT,
+    primera_vista               TEXT NOT NULL,   -- ISO date
+    ultimo_recordatorio_telegram TEXT,
+    publicado_en_instagram      INTEGER NOT NULL DEFAULT 0,
+    aviso_ultima_semana_ig_enviado INTEGER NOT NULL DEFAULT 0,
+    estado                      TEXT NOT NULL DEFAULT 'activo',  -- activo/vencido
+    actualizado_en              INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS convenios_estado_idx ON convenios (estado);
+
 -- ── LA COLA DE INSTAGRAM (Claude, 25-ago-2026) ──────────────────────────
 --
 -- Un candidato entra apenas se avisa por Telegram (`alertas` de Héctor o
@@ -350,6 +379,61 @@ def anuncios_recientes(con, desde_epoch):
              "precio": f["precio"], "referencia": f["referencia"],
              "caida": f["caida"], "primera_vez_vista": f["creado_en"],
              "fuente": "aliado"} for f in filas]
+
+
+# ── CONVENIOS BANCO-COMERCIO ─────────────────────────────────────────────
+
+def obtener_convenio(con, clave):
+    """La fila tal cual está guardada, o None si es la primera vez que se
+    ve esta clave -- ese `None` es la señal de `es_nuevo=True` para
+    `convenios_ciclo.decidir_acciones`."""
+    f = con.execute("SELECT * FROM convenios WHERE clave=?", (clave,)).fetchone()
+    return dict(f) if f else None
+
+
+def registrar_convenio_nuevo(con, conv, ahora_iso, ahora_epoch):
+    """Sólo se llama la primera vez que aparece una `clave`. `conv` es un
+    `convenios_pangui.ConvenioPangui`."""
+    con.execute(
+        "INSERT OR IGNORE INTO convenios (clave, emisor, comercio, categoria, "
+        "descuento, titulo, dia_semana, vigencia_hasta, es_recurrente, "
+        "verificado_recientemente, url_fuente, texto, primera_vista, "
+        "actualizado_en) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (conv.clave, conv.emisor, conv.comercio, conv.categoria, conv.descuento,
+         conv.titulo, conv.dia_semana,
+         conv.vigencia_hasta.isoformat() if conv.vigencia_hasta else None,
+         1 if conv.es_recurrente else 0,
+         1 if conv.verificado_recientemente else 0,
+         conv.url_fuente, conv.texto, ahora_iso, ahora_epoch))
+    con.commit()
+
+
+def marcar_recordatorio_telegram(con, clave, ahora_iso, ahora_epoch):
+    con.execute(
+        "UPDATE convenios SET ultimo_recordatorio_telegram=?, actualizado_en=? "
+        "WHERE clave=?", (ahora_iso, ahora_epoch, clave))
+    con.commit()
+
+
+def marcar_publicado_instagram(con, clave, ahora_epoch):
+    con.execute(
+        "UPDATE convenios SET publicado_en_instagram=1, actualizado_en=? "
+        "WHERE clave=?", (ahora_epoch, clave))
+    con.commit()
+
+
+def marcar_aviso_ultima_semana_ig(con, clave, ahora_epoch):
+    con.execute(
+        "UPDATE convenios SET aviso_ultima_semana_ig_enviado=1, "
+        "actualizado_en=? WHERE clave=?", (ahora_epoch, clave))
+    con.commit()
+
+
+def marcar_convenio_vencido(con, clave, ahora_epoch):
+    con.execute(
+        "UPDATE convenios SET estado='vencido', actualizado_en=? WHERE clave=?",
+        (ahora_epoch, clave))
+    con.commit()
 
 
 # ── COLA DE INSTAGRAM ────────────────────────────────────────────────────
