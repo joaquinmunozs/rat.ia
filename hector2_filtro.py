@@ -98,6 +98,33 @@ _HOST_IMAGEN = re.compile(
     r"\d*\.", re.I)
 _EXT_IMAGEN = re.compile(r"\.(?:jpe?g|png|webp|gif|avif|bmp|svg|ico)(?:[?#]|$)", re.I)
 
+# (Claude, 25-ago-2026) Hosts de imagen que NO empiezan con un prefijo típico.
+# El caso real: `cl-cenco-pim-resizer.ecomm.cencosud.com` (el redimensionador
+# de Cencosud para Paris y Jumbo) no empieza con "img" ni termina en ".jpg",
+# así que pasaba el filtro y podía terminar elegido como link del producto.
+_HOST_IMAGEN_CONTIENE = re.compile(r"(?:resizer|pim-|-img|imgproxy|photos?)\.", re.I)
+
+# Links que el aliado agrega como AYUDA, no como el producto: un "buscar en
+# Google" y links a Telegram/WhatsApp. Si el mensaje no trae link de tienda,
+# `detectar_producto` se quedaba con el primero que no fuera imagen — y ese
+# era el buscador. Ese es literalmente el "al apretar PRODUCTO me lleva a
+# otro lado" que reportó Joaquín: caía en una búsqueda de Google.
+_NO_ES_PRODUCTO = re.compile(
+    r"^(?:www\.)?(?:google\.[a-z.]+|bing\.com|duckduckgo\.com|t\.me|wa\.me|"
+    r"api\.whatsapp\.com|facebook\.com|instagram\.com|youtube\.com)$", re.I)
+
+# El redirector de afiliado del aliado. Funciona en un navegador (lleva al
+# producto y le acredita la comisión), pero devuelve 403 a cualquier cliente
+# que no sea un navegador real -- verificado el 25-ago con las cabeceras de
+# Chrome de `descubrir.CABECERAS`, con y sin Referer. O sea: NO se puede
+# resolver desde acá para saber a qué tienda apunta.
+#
+# Se usa igual como último recurso —es el link que el propio aliado publica y
+# a un humano sí le sirve— pero NUNCA se prefiere sobre un link directo a
+# tienda, y no se le puede cruzar contra la base de Héctor porque no hay forma
+# de saber el dominio real.
+_REDIRECTOR_ALIADO = re.compile(r"(?:^|\.)(?:link\.)?ofertasshark\.cl$", re.I)
+
 # (Claude, 25-ago-2026) TIENDAS QUE NO SE REENVÍAN NUNCA.
 #
 # Amazon: TODAS las ofertas de Amazon que reenvía el aliado resultaron ser
@@ -121,7 +148,9 @@ def esta_bloqueada(dominio):
 
 
 def _es_imagen(url, dominio):
-    return bool(_HOST_IMAGEN.match(dominio or "") or _EXT_IMAGEN.search(url or ""))
+    return bool(_HOST_IMAGEN.match(dominio or "")
+                or _HOST_IMAGEN_CONTIENE.search(dominio or "")
+                or _EXT_IMAGEN.search(url or ""))
 
 
 def tienda_de(dominio):
@@ -150,26 +179,52 @@ def tienda_de(dominio):
     return None
 
 
+def imagen_de(urls):
+    """La foto del producto que trae el mensaje, o None.
+
+    (Claude, 25-ago-2026) Vuelve a existir porque al rearmar el aviso se
+    perdió la vista previa en Telegram. El mensaje del aliado empieza con un
+    `<a>` invisible a la imagen, y de ahí Telegram sacaba la miniatura; al
+    construir el mensaje de cero sin ese link, los avisos empezaron a llegar
+    sin foto. Reportado por Joaquín.
+    """
+    for u in urls:
+        dom = _dominio_de(u)
+        if dom and _es_imagen(u, dom):
+            return u
+    return None
+
+
 def detectar_producto(urls):
     """De todos los links del mensaje, cuál es el del producto.
 
-    Prioridad: un dominio que YA está en el catálogo de 44 tiendas de Héctor
-    (ahí se sabe además el rubro, gratis). Si ninguno calza, se toma el
-    primer link que no parezca una imagen -- sin tienda conocida, así que
-    solo sirve para verificación en vivo, no para cruzar contra la base.
+    (Claude, 25-ago-2026) LA PRIORIDAD ES EXPLÍCITA, Y ESE ERA EL BUG.
+    Antes se tomaba "el primero que no fuera una imagen", y el aliado pone
+    en sus mensajes, en este orden: la foto, un "buscar en Google", y recién
+    después el link real. Sin tienda conocida se elegía el de Google — o sea
+    que apretar PRODUCTO abría una búsqueda, no la ficha.
+
+    Ahora, de mejor a peor:
+      1. Un dominio del catálogo de Héctor (ahí se sabe el rubro gratis y se
+         puede cruzar contra la base real).
+      2. Cualquier otro link de tienda: no se puede cruzar, pero es la ficha.
+      3. El redirector de afiliado del aliado, sólo si no hay nada mejor.
+    Nunca un buscador, una red social ni una imagen.
     """
-    candidatos = []
+    otro_directo = None
+    redirector = None
     for u in urls:
         dom = _dominio_de(u)
-        if not dom or _es_imagen(u, dom):
+        if not dom or _es_imagen(u, dom) or _NO_ES_PRODUCTO.match(dom):
             continue
         conocida = tienda_de(dom)
         if conocida:
             return conocida, u, _DOMINIOS_HECTOR[conocida]
-        candidatos.append(u)
-    if candidatos:
-        return None, candidatos[0], None
-    return None, None, None
+        if _REDIRECTOR_ALIADO.search(dom):
+            redirector = redirector or u
+            continue
+        otro_directo = otro_directo or u
+    return None, (otro_directo or redirector), None
 
 
 # (Claude, 25-ago-2026) El aliado rotula sus mensajes con el mismo sistema de
@@ -384,12 +439,14 @@ def evaluar_mensaje(texto, canal, con_hector=None, verificar_vivo=True,
     precios = extraer_precios(texto)
     precio_declarado = min(precios) if precios else None
     nombre = nombre_declarado(texto, tienda)
+    imagen = imagen_de(urls)
 
     def _salida(veredicto, motivo, fuente, **extra):
         conf = (confianza_canal_fn(canal)
                 if (confianza_canal_fn and veredicto != "descartado") else None)
         d = {"veredicto": veredicto, "motivo": motivo, "fuente": fuente,
              "tienda": tienda, "url": url, "nombre": nombre,
+             "imagen": imagen,
              "caida_declarada": pct_declarado, "caida_real": None,
              "precio_declarado": precio_declarado, "precio_real": None,
              # El "antes" que declara el aliado. Se guarda para poder

@@ -567,6 +567,20 @@ def _armar_aviso(r, con_h2, ahora=None):
     }
     tienda = r.get("tienda") or _comercio_de(r.get("url"))
     texto = alertas.armar_texto(det, tienda)
+
+    # LA MINIATURA (Claude, 25-ago-2026)
+    # Telegram arma la vista previa con el PRIMER link del mensaje. El aviso
+    # del aliado empezaba con un ancla invisible a la foto del producto, y de
+    # ahí salía la imagen; al rearmar el mensaje de cero esa ancla se perdió y
+    # los avisos empezaron a llegar sin foto. Se vuelve a poner delante, con
+    # un carácter de ancho cero como texto para que no se vea nada.
+    #
+    # `disable_web_page_preview` ya viene en False en `_enviar_a_ratia`, así
+    # que con esto alcanza: no hay que mandar la foto como adjunto ni gastar
+    # una petición extra.
+    imagen = r.get("imagen")
+    if imagen:
+        texto = '<a href="%s">​</a>%s' % (imagen, texto)
     if not historico:
         # Honestidad, mismo criterio que usa Héctor con sus propias fichas
         # sin historial: si el "antes" es el que declara el aliado y no un

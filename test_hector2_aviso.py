@@ -395,5 +395,91 @@ class TestAlertasGuardaElTexto(unittest.TestCase):
                 pass
 
 
+
+
+class TestLinkDelProductoYMiniatura(unittest.TestCase):
+    """El bug del 25-ago: "al apretar PRODUCTO no lleva a la url de producto,
+    envía a otro lado" + "ya ni se visualiza la imagen".
+
+    Los datos de estas pruebas son mensajes REALES sacados de `hector2.db` en
+    Railway, no inventados.
+    """
+
+    def test_gana_el_link_de_tienda_sobre_google_y_la_imagen(self):
+        # Orden real del mensaje del aliado: foto, buscador, ficha.
+        urls = [
+            "https://cl-cenco-pim-resizer.ecomm.cencosud.com/unsafe/adaptive-fit-in/792x1068/prd-cl/x",
+            "https://www.google.com/search?q=prueba%20Refrigerador%20Top%20Freezer",
+            "https://www.paris.cl/MKY4LYZULH.html?utm_source=affluxo&utm_medium=afiliado",
+        ]
+        tienda, url, _r = f.detectar_producto(urls)
+        self.assertEqual(tienda, "paris.cl")
+        self.assertIn("paris.cl/MKY4LYZULH", url)
+
+    def test_nunca_devuelve_una_busqueda_de_google(self):
+        # Sin link de tienda, antes se quedaba con el de Google y apretar
+        # PRODUCTO abría una búsqueda. Ese era el "me lleva a otro lado".
+        urls = [
+            "https://img2.ofertasshark.cl/abc/rs:fit:800:800:1/f:jpg/eyJ4Ijoie",
+            "https://www.google.com/search?q=algo",
+        ]
+        _t, url, _r = f.detectar_producto(urls)
+        self.assertIsNone(url)
+
+    def test_el_redirector_del_aliado_es_el_ultimo_recurso(self):
+        # Si es lo único que hay, se usa: al humano le sirve igual.
+        urls = ["https://link.ofertasshark.cl/link/v2/redirect?e=SId6GOAxCJG0"]
+        _t, url, _r = f.detectar_producto(urls)
+        self.assertIn("link.ofertasshark.cl", url)
+
+        # Pero NUNCA por delante de un link directo a la tienda.
+        urls2 = [
+            "https://link.ofertasshark.cl/link/v2/redirect?e=SId6GOAxCJG0",
+            "https://simple.ripley.cl/producto/notebook-123",
+        ]
+        tienda, url2, _r2 = f.detectar_producto(urls2)
+        self.assertEqual(tienda, "ripley.cl")
+        self.assertIn("simple.ripley.cl", url2)
+
+    def test_el_resizer_de_cencosud_no_es_el_producto(self):
+        # No empieza con "img" ni termina en ".jpg": el patrón viejo lo dejaba
+        # pasar como si fuera la ficha.
+        urls = ["https://cl-cenco-pim-resizer.ecomm.cencosud.com/unsafe/x/y"]
+        _t, url, _r = f.detectar_producto(urls)
+        self.assertIsNone(url)
+
+    def test_se_recupera_la_imagen_para_la_vista_previa(self):
+        urls = [
+            "https://img2.ofertasshark.cl/abc/rs:fit:800:800:1/f:jpg/eyJ4Ijoie",
+            "https://www.paris.cl/MKY4LYZULH.html",
+        ]
+        self.assertIn("img2.ofertasshark.cl", f.imagen_de(urls) or "")
+        self.assertIsNone(f.imagen_de(["https://www.paris.cl/x.html"]))
+
+    def test_el_aviso_empieza_con_el_ancla_invisible_de_la_foto(self):
+        import reenviar_ofertas as R
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        con = hector2_db.abrir(tmp.name)
+        try:
+            r = {"url": "https://www.paris.cl/x.html", "nombre": "Refrigerador LG",
+                 "tienda": "paris.cl", "precio_declarado": 41_750,
+                 "precio_real": None, "referencia": None,
+                 "referencia_declarada": 536_677, "caida_real": None,
+                 "historico": [],
+                 "imagen": "https://img2.ofertasshark.cl/abc/f:jpg/eyJ4"}
+            texto, _c, _p, _ref, _h = R._armar_aviso(r, con)
+            # Telegram arma la vista previa con el PRIMER link del mensaje.
+            self.assertTrue(texto.startswith('<a href="https://img2.ofertasshark.cl'))
+            self.assertIn("​", texto)          # ancla invisible
+            self.assertIn("paris.cl/x.html", texto)  # y el link real sigue ahí
+        finally:
+            con.close()
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
