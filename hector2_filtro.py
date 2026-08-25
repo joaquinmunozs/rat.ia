@@ -179,6 +179,48 @@ def tienda_de(dominio):
     return None
 
 
+def url_real_desde_imagen(urls):
+    """La URL del producto escondida DENTRO del link de la imagen.
+
+    (Claude, 25-ago-2026) El proxy de imágenes del aliado
+    (`img2.ofertasshark.cl/.../f:jpg/<base64>`) lleva la URL original de la
+    foto codificada en base64 al final del path. Y esa foto vive en el sitio
+    del comercio, así que su dominio ES el del producto -- muchas veces la
+    ficha completa.
+
+    Existe porque el redirector del aliado
+    (`link.ofertasshark.cl/link/v2/redirect?e=...`) **no le sirve a nadie**:
+    Joaquín reportó que al apretar "PRODUCTO" llega a una página roja que
+    dice `unauthorized`. Ya sabíamos que devuelve 403 a un script; ahora
+    está confirmado que también falla en un navegador real. Un link que no
+    abre es peor que no poner link.
+
+    Devuelve None si no se puede decodificar -- nunca inventa una URL.
+    """
+    import base64
+    for u in urls or []:
+        dom = _dominio_de(u)
+        if not dom or not _es_imagen(u, dom):
+            continue
+        # El base64 es el último segmento del path, después de "/f:jpg/".
+        cola = u.split("/")[-1].split("?")[0]
+        if len(cola) < 20:
+            continue
+        for relleno in range(4):
+            try:
+                crudo = base64.urlsafe_b64decode(cola + "=" * relleno).decode("utf-8")
+            except Exception:                                 # noqa: BLE001
+                continue
+            if crudo.startswith("http"):
+                # Es la URL de la FOTO. Sirve para saber el dominio real del
+                # comercio; que además sea la ficha depende de cómo publique
+                # cada tienda, así que se devuelve tal cual y el llamador
+                # decide.
+                return crudo
+            break
+    return None
+
+
 def imagen_de(urls):
     """La foto del producto que trae el mensaje, o None.
 
@@ -224,7 +266,26 @@ def detectar_producto(urls):
             redirector = redirector or u
             continue
         otro_directo = otro_directo or u
-    return None, (otro_directo or redirector), None
+
+    if otro_directo:
+        return None, otro_directo, None
+
+    # (Claude, 25-ago-2026) Antes de caer al redirector: la URL real suele
+    # venir en base64 dentro del link de la imagen. Se prefiere SIEMPRE
+    # sobre el redirector, que devuelve `unauthorized` tanto a un script
+    # como a una persona -- ver `url_real_desde_imagen`.
+    rescatada = url_real_desde_imagen(urls)
+    if rescatada:
+        dom = _dominio_de(rescatada)
+        conocida = tienda_de(dom)
+        if conocida:
+            return conocida, rescatada, _DOMINIOS_HECTOR[conocida]
+        if not _es_imagen(rescatada, dom) and not _NO_ES_PRODUCTO.match(dom or ""):
+            return None, rescatada, None
+
+    # El redirector queda como último recurso SÓLO para el registro. No se
+    # publica: `_armar_aviso` lo descarta (ver `_link_publicable`).
+    return None, redirector, None
 
 
 # (Claude, 25-ago-2026) El aliado rotula sus mensajes con el mismo sistema de

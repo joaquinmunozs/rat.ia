@@ -527,6 +527,22 @@ def _armar_aviso(r, con_h2, ahora=None):
     if not precio:
         return None
 
+    # ── UN LINK QUE NO ABRE ES PEOR QUE NO PUBLICAR ───────────────────
+    # (Claude, 25-ago-2026) El redirector del aliado
+    # (`link.ofertasshark.cl/link/v2/redirect?e=...`) devuelve `unauthorized`
+    # también en un navegador real -- Joaquín: "al apretar PRODUCTO me lleva
+    # a una pagina roja que dice unauthorized". Ya se sabía que daba 403 a un
+    # script; se lo había dejado como último recurso pensando que a una
+    # persona sí le serviría. No le sirve.
+    #
+    # `hector2_filtro.detectar_producto` ya intenta rescatar la URL real del
+    # base64 del link de la imagen antes de llegar acá. Si aun así lo único
+    # que hay es el redirector, no se publica: el aviso completo depende de
+    # que el suscriptor pueda llegar al producto.
+    if hector2_filtro._REDIRECTOR_ALIADO.search(
+            hector2_filtro._dominio_de(r.get("url")) or ""):
+        return None
+
     caida = r.get("caida_real")
     referencia = r.get("referencia")
 
@@ -542,11 +558,37 @@ def _armar_aviso(r, con_h2, ahora=None):
         previos = [p for p, _ in historico if p > precio]
         if previos:
             referencia = min(previos)
+        else:
+            # ── TENEMOS SONDEO PROPIO Y NO MUESTRA NINGUNA CAÍDA ──────
+            # (Claude, 25-ago-2026) Eso NO es "falta información": es
+            # EVIDENCIA EN CONTRA. Si lo que vimos es igual o mayor que el
+            # precio de hoy, este precio es el normal del producto y no hay
+            # oferta que avisar.
+            #
+            # Caso real que lo destapó: una toalla Cannon Home. El aliado
+            # declaraba "$139.930 → $11.990 (91,4%)" y salió al tópico de
+            # ERRORES DE PRECIO... con nuestro propio sondeo impreso más
+            # abajo en el MISMO mensaje diciendo "$11.990". El aviso se
+            # contradecía solo. Joaquín: "toallas que estaban en 120.000
+            # (imposible) y hoy bajaron a 11000 (ese siempre es precio
+            # normal)".
+            #
+            # Antes esto caía al `referencia_declarada` de abajo y publicaba
+            # el ancla inflada del aliado — exactamente el fraude que
+            # Hector2 existe para filtrar.
+            return None
 
     if referencia is None:
-        # Último recurso: el "antes" del aliado. Se usa sólo cuando no
-        # tenemos ni una observación propia, y el mensaje lo dice.
-        referencia = r.get("referencia_declarada")
+        # ── SIN NINGÚN DATO PROPIO: NO SE PUBLICA UN PORCENTAJE ───────
+        # Antes acá se usaba `referencia_declarada` (el "antes" del aliado)
+        # como último recurso. Se quitó: ese número es justo el que puede
+        # estar inflado, y publicarlo como si fuera nuestro convierte a
+        # Rat.IA en el mismo canal del que se quería diferenciar.
+        #
+        # Sin referencia verificable no hay caída que anunciar, así que no
+        # hay aviso. Se pierde alcance; se conserva que un "-91%" de Rat.IA
+        # signifique algo.
+        return None
 
     if not referencia or referencia <= precio:
         return None
@@ -581,12 +623,10 @@ def _armar_aviso(r, con_h2, ahora=None):
     imagen = r.get("imagen")
     if imagen:
         texto = '<a href="%s">​</a>%s' % (imagen, texto)
-    if not historico:
-        # Honestidad, mismo criterio que usa Héctor con sus propias fichas
-        # sin historial: si el "antes" es el que declara el aliado y no un
-        # sondeo nuestro, el mensaje no puede presentarlo como verificado.
-        texto += ("\n<i>Referencia declarada por la fuente: todavía no "
-                  "tenemos sondeo propio de esta ficha</i>")
+    # (Claude, 25-ago-2026) Acá vivía una nota de "referencia declarada por
+    # la fuente", para los avisos armados con el "antes" del aliado. Quedó
+    # inalcanzable: sin sondeo propio ya no se publica nada (ver arriba), así
+    # que todo aviso que llega hasta acá tiene historial propio detrás.
     return texto, caida, int(precio), int(referencia), historico
 
 

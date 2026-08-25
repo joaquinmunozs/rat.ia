@@ -319,14 +319,17 @@ class TestElPrecioDeHoyNoEsSuPropiaReferencia(unittest.TestCase):
         self.assertEqual(referencia, 20_000)
         self.assertAlmostEqual(caida, 0.75)
 
-    def test_sin_sondeo_propio_lo_dice_en_el_mensaje(self):
+    def test_sin_sondeo_propio_NO_se_publica(self):
+        # (Claude, 25-ago) Antes esto publicaba usando el "antes" del aliado
+        # ($20.000) y lo rotulaba "referencia declarada por la fuente". Se
+        # quitó: ese número es justo el que puede estar inflado. El caso real
+        # que lo destapó fue una toalla que el aliado declaraba bajando de
+        # $139.930 a $11.990 -- ver `test_toalla_falsa.py`.
         r = {"url": "https://tiendarara.cl/p/8", "nombre": "Otra cosa",
              "tienda": None, "precio_declarado": 5_000, "precio_real": None,
              "referencia": None, "referencia_declarada": 20_000,
              "caida_real": None, "historico": []}
-        texto, _c, _p, ref, _h = self.R._armar_aviso(r, self.con)
-        self.assertEqual(ref, 20_000)
-        self.assertIn("declarada por la fuente", texto)
+        self.assertIsNone(self.R._armar_aviso(r, self.con))
 
 
 class TestBaseEnDiscoPersistente(unittest.TestCase):
@@ -462,6 +465,11 @@ class TestLinkDelProductoYMiniatura(unittest.TestCase):
         tmp.close()
         con = hector2_db.abrir(tmp.name)
         try:
+            # Con sondeo propio: sin él ya no se publica nada (ver
+            # `test_sin_sondeo_propio_NO_se_publica`), y esta prueba es
+            # sobre la miniatura, no sobre la referencia.
+            hector2_db.registrar_precio_visto(
+                con, "https://www.paris.cl/x.html", 536_677, "declarado_aliado")
             r = {"url": "https://www.paris.cl/x.html", "nombre": "Refrigerador LG",
                  "tienda": "paris.cl", "precio_declarado": 41_750,
                  "precio_real": None, "referencia": None,
