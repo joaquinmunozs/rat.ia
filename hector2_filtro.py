@@ -57,15 +57,16 @@ _DOMINIOS_HECTOR = {t["dominio"]: t["rubro"] for t in tiendas.TIENDAS}
 # electrodoméstico -- un "-60%" en un libro casi siempre es un precio de
 # catálogo que nunca se cobró, y una tarjeta de regalo "con descuento" es
 # directamente sospechosa.
-RUIDO_IRRELEVANTE = re.compile(
-    r"\b("
-    r"libro[s]?\b|e-?book|revista[s]?\b|comic[s]?\b|manga\b|"
-    r"entrada[s]?\b|ticket[s]?\b|evento\b|concierto\b|"
-    r"tarjeta\s*de\s*regalo|gift\s*card|giftcard|"
-    r"suscripci[oó]n|membres[íi]a|plan\s*(?:mensual|anual)\b|"
-    r"curso[s]?\b|capacitaci[oó]n\b|"
-    r"seguro[s]?\b(?!\s*de\s*vidrio)"     # "seguro" sí, pero "vidrio de seguridad" no
-    r")\b", re.I)
+#
+# (Claude, 25-ago-2026) EL PATRÓN SE MUDÓ A `baseprecios`. Vive allá porque
+# Héctor lo necesita en `evaluar` y `hector2_filtro` ya importa `baseprecios`
+# -- al revés habría import circular. Se mantiene este nombre porque es el
+# que usan las pruebas y el resto del módulo.
+#
+# En la mudanza se le sacaron `manga` y `entrada` sueltos: descartaban
+# "Polera Manga Larga" y "Mesa de Entrada", o sea ropa y muebles. El detalle
+# medido está en el comentario de `baseprecios.RUIDO_NO_COMERCIABLE`.
+RUIDO_IRRELEVANTE = baseprecios.RUIDO_NO_COMERCIABLE
 
 _PORCENTAJE = re.compile(r"\(?\s*-?\s*(\d{1,3}(?:[.,]\d+)?)\s*%\s*\)?")
 _PRECIO = re.compile(r"\$\s?([\d.,]{3,})")

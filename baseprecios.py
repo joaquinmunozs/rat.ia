@@ -49,6 +49,7 @@ que ESE producto costó de verdad en el tiempo.
 """
 import json
 import os
+import re
 import sqlite3
 import statistics
 import time
@@ -132,6 +133,75 @@ def es_libreria(url):
     if d.startswith("www."):
         d = d[4:]
     return any(d == x or d.endswith("." + x) for x in DOMINIOS_LIBRERIA)
+
+
+# ── LO QUE NO ES UN PRODUCTO CON PRECIO NORMAL (Claude, 25-ago-2026) ────────
+#
+# Una gift card no tiene precio: su precio ES su monto. Una de $50.000 y una
+# de $10.000 son la misma ficha con otro valor, así que un cambio de monto por
+# defecto se lee como una caída del 80% -- un error de precio publicado, y el
+# suscriptor no puede aprovechar nada porque comprar $10.000 en gift card
+# cuesta exactamente $10.000. Lo mismo pasa con entradas (varían por evento y
+# asiento), suscripciones, cursos y seguros.
+#
+# Esto YA se filtraba en `hector2_filtro` para los reenvíos del aliado, y NO
+# del lado de Héctor. Misma asimetría que tenían los libros antes del 25-ago:
+# arreglado en un lado, abierto en el otro. Encontrado con una ficha real de
+# hushpuppies.cl que el catálogo tiene cargada: "Gift Card Cinturón Belt Bar
+# Hush Puppies", $29.990.
+#
+# ── DOS PATRONES QUE HUBO QUE SACAR, Y POR QUÉ ──────────────────────────────
+# El patrón original de `hector2_filtro` traía `manga\b` (por los cómics) y
+# `entrada[s]?\b` (por las entradas de concierto). Probados contra nombres
+# reales de retail, descartaban en silencio:
+#
+#     "Polera Manga Larga Hombre Nike"      -> descartada por "Manga"
+#     "Camisa Manga Corta Lino Mujer"       -> descartada por "Manga"
+#     "Mesa de Entrada Recibidor Madera"    -> descartada por "Entrada"
+#     "Puerta de Entrada Roble 90x200"      -> descartada por "Entrada"
+#
+# O sea que el filtro de ruido estaba borrando ropa y muebles, que es
+# catálogo bueno y de los rubros más grandes. Es la lección #5 del 20-ago otra
+# vez ("un regex de sanidad puede descartar en silencio lo más importante"),
+# la misma que ya había costado el canal "80" con el regex de porcentajes.
+#
+#   - `manga` se saca entero: en el retail chileno "manga larga/corta" es
+#     muchísimo más frecuente que el cómic, y los cómics ya caen por
+#     `comic|libro|revista` y por el corte de librerías por dominio.
+#   - `entrada` sólo cuenta si el mismo nombre nombra un evento. "Mesa de
+#     entrada" pasa; "Entradas Concierto Bad Bunny" no.
+#   - `seguro` exige un tipo de póliza detrás. El lookahead viejo sólo salvaba
+#     "seguro de vidrio", y en ferretería chilena "seguro" es una PIEZA:
+#     "Seguro de Puerta Infantil", "Cerradura con Seguro Interior", "Casco
+#     Seguro Bicicleta". construmart.cl mide el 100% de sus 9.886 fichas, así
+#     que ese descarte se habría notado.
+#   - `curso` exige "de/online/virtual/presencial", para no llevarse un
+#     "curso de agua" de piscinas.
+#
+# Que estos tres hayan aparecido recién ahora no es casualidad: en
+# `hector2_filtro` el patrón corría sobre anuncios del aliado, donde estas
+# palabras casi no salen. Aplicado al catálogo entero de Héctor —360.000
+# fichas de ferretería, ropa y muebles— el mismo regex tiene otro costo. Un
+# filtro no se muda de contexto sin volver a probarlo.
+RUIDO_NO_COMERCIABLE = re.compile(
+    r"\b("
+    r"libro[s]?\b|e-?book|revista[s]?\b|comic[s]?\b|"
+    r"entrada[s]?\b(?=[^\n]*\b(?:concierto|evento|show|festival|teatro|"
+    r"estadio|partido|tour)\b)|"
+    r"ticket[s]?\b|concierto\b|"
+    r"tarjeta\s*de\s*regalo|gift\s*card|giftcard|"
+    r"suscripci[oó]n|membres[íi]a|plan\s*(?:mensual|anual)\b|"
+    r"curso[s]?\s+(?:de\b|online|virtual|presencial|e-?learning)|"
+    r"capacitaci[oó]n\b|"
+    r"seguro\s+(?:de\s+)?(?:vida|salud|auto|automotriz|viaje|hogar|"
+    r"cesant[ií]a|oncol[oó]gico|complementario)\b"
+    r")\b", re.I)
+
+
+def es_ruido(nombre):
+    """¿Este nombre es de algo que no se avisa nunca? -> (bool, motivo)."""
+    m = RUIDO_NO_COMERCIABLE.search(nombre or "")
+    return (True, m.group(0).lower()) if m else (False, "")
 
 
 def _dias_cubiertos(ts, ahora):
@@ -550,6 +620,23 @@ def evaluar(con, url, precio_actual, ahora=None, nombre=None, tienda=None, diag=
     # puerta abierta.
     if es_libreria(url):
         return _marcar("libreria")
+
+    # ── GIFT CARDS, ENTRADAS, SUSCRIPCIONES: TAMPOCO (Claude, 25-ago-2026)
+    #
+    # Va en el mismo punto y por la misma razón que el corte de librerías de
+    # arriba: `evaluar` es la única puerta por la que pasan la barrida y la
+    # lista caliente. Ver `RUIDO_NO_COMERCIABLE` para el caso real que lo
+    # destapó y para los dos patrones que hubo que sacar por descartar ropa
+    # y muebles.
+    #
+    # Sólo corta cuando HAY nombre: sin nombre no se puede afirmar que sea
+    # ruido, y descartar por las dudas perdería fichas buenas. Es el mismo
+    # criterio de "un precio que se contradice no se usa" al revés -- ante la
+    # duda, no se inventa una razón para descartar.
+    if nombre:
+        ruido, que = es_ruido(nombre)
+        if ruido:
+            return _marcar("no_comerciable:%s" % que)
 
     ahora = int(ahora or time.time())
     ts = tramos(con, url, ahora=ahora)
