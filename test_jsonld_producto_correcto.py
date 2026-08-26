@@ -100,3 +100,35 @@ def test_compara_ruta_sin_dominio_ni_query():
     r = extractor.extraer(
         html, "https://www.bata.cl/producto/bototo-cuero-123?utm_source=x")
     assert r["precio"] == 45990
+
+
+# ── ESTAS PRUEBAS NO SE ESTABAN EJECUTANDO (Claude, 25-ago-2026) ────────────
+#
+# Están escritas como funciones sueltas al estilo pytest, y pytest no está
+# instalado ni figura en `requirements.txt`. El proyecto corre sus pruebas con
+# `python -m unittest <archivo>`, que sólo recoge métodos de `TestCase`:
+# durante un día entero este archivo respondió "Ran 0 tests" -- que se lee
+# igual que un éxito -- mientras las seis pruebas del arreglo del extractor
+# nunca corrían. Es el mismo modo de falla del `if __name__` que había quedado
+# a mitad de `test_hector2_aviso.py`: una prueba que no corre no avisa que no
+# corre.
+#
+# Verificado a mano antes de enganchar: las seis pasan. Lo que faltaba era el
+# enganche, no el arreglo del extractor.
+#
+# Se envuelven en vez de reescribirse para no tocar pruebas que ya funcionan.
+import unittest as _unittest
+
+
+class PruebasJsonLd(_unittest.TestCase):
+    """Envoltorio para que `python -m unittest` recoja las funciones de arriba."""
+
+
+for _nombre, _fn in sorted(globals().items()):
+    if _nombre.startswith("test_") and callable(_fn):
+        setattr(PruebasJsonLd, _nombre, (lambda f: lambda self: f())(_fn))
+del _nombre, _fn
+
+
+if __name__ == "__main__":
+    _unittest.main(verbosity=1)

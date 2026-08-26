@@ -549,10 +549,46 @@ def _armar_aviso(r, con_h2, ahora=None):
     # El sondeo propio primero (base de Héctor); si esa ficha no está en su
     # catálogo, lo que Hector2 haya ido observando por su cuenta.
     historico = list(r.get("historico") or [])
+    de_hector2 = False
     if not historico and r.get("url"):
-        historico = hector2_db.historico_propio(con_h2, r["url"])
+        historico = hector2_db.historico_propio(
+            con_h2, r["url"], dias=baseprecios.VENTANA_HISTORIAL_DIAS,
+            ahora=ahora)
+        de_hector2 = True
 
     if referencia is None and historico:
+        # ── UNA OBSERVACIÓN SUELTA NO ES UNA REFERENCIA ───────────────────
+        # (Claude, 25-ago-2026) Cuando la referencia se deriva del sondeo
+        # PROPIO de Hector2 se le exige lo mismo que `baseprecios.evaluar` le
+        # exige a Héctor: 5 lecturas y 7 días. Antes no se le exigía nada, y
+        # bastaba UNA observación mayor para publicar un porcentaje.
+        #
+        # Por qué importa más de lo que parece: `precios_vistos` guarda el
+        # `precio_declarado` del aliado, y el aliado publica el mismo hallazgo
+        # en 2-3 canales a la vez (bitácora del 20-ago). Si uno de esos
+        # mensajes traía un precio más alto, al minuto siguiente ese número se
+        # convertía en "nuestra" referencia. O sea: el ancla inflada del
+        # aliado volvía a entrar por la puerta de atrás, justo después de que
+        # `f85c5ef` la sacara por la puerta de adelante.
+        #
+        # Reproducido con el reloj Curren del 25-ago (los tres publicaban un
+        # -70,0% contra $46.990):
+        #     1 observación, 2 días de historia   -> publicaba
+        #     1 observación de hace 200 días      -> publicaba
+        #     1 observación de hace 1 minuto      -> publicaba
+        #
+        # Decisión de Joaquín: la misma vara que Héctor, no una más blanda.
+        # Cuesta alcance en las tiendas fuera del catálogo -- son las que
+        # menos sondeo propio acumulan -- y a cambio un porcentaje publicado
+        # por Rat.IA siempre tiene respaldo detrás.
+        if de_hector2:
+            obs, dias = hector2_db.respaldo_propio(
+                con_h2, r["url"], dias=baseprecios.VENTANA_HISTORIAL_DIAS,
+                ahora=ahora)
+            if (obs < baseprecios.MIN_OBSERVACIONES
+                    or dias < baseprecios.DIAS_MINIMOS_HISTORIAL):
+                return None
+
         # Mismo criterio que baseprecios: el MÍNIMO observado, no el máximo
         # ni la media. Es el número que aguanta que lo revisen.
         previos = [p for p, _ in historico if p > precio]

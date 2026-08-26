@@ -12,6 +12,7 @@ en produccion), no inventados.
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -82,7 +83,16 @@ class TestNoSePublicaSinReferenciaPropia(unittest.TestCase):
 
     def test_con_una_caida_REAL_si_se_publica(self):
         # La contraparte: si nuestro sondeo respalda la caida, sale.
-        hector2_db.registrar_precio_visto(self.con, URL_REAL, 40000, "declarado_aliado")
+        # (Claude, 25-ago) "Respaldar" pasó a ser la misma vara de Héctor:
+        # 5 observaciones y 7 dias. Una sola ya no alcanza -- ver
+        # `test_una_sola_observacion_no_es_referencia`.
+        # Repartidas en 8 dias: cinco lecturas apretadas en el mismo dia
+        # NO alcanzan, y eso esta fijado en `test_reloj_sin_respaldo`.
+        ahora = int(time.time())
+        for d in (12, 10, 8, 6, 4):
+            hector2_db.registrar_precio_visto(self.con, URL_REAL, 40000,
+                                              "declarado_aliado",
+                                              visto_en=ahora - d * 86400)
         armado = R._armar_aviso(self._toalla(), self.con)
         self.assertIsNotNone(armado)
         texto, caida, precio, referencia, _h = armado

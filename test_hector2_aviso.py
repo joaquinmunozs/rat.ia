@@ -303,8 +303,14 @@ class TestElPrecioDeHoyNoEsSuPropiaReferencia(unittest.TestCase):
     def test_no_se_referencia_a_si_mismo(self):
         u = "https://tiendarara.cl/p/7"
         ahora = int(time.time())
-        hector2_db.registrar_precio_visto(self.con, u, 20_000,
-                                          "declarado_aliado", visto_en=ahora - 9 * DIA)
+        # (Claude, 25-ago) El sondeo tiene que alcanzar la vara de Héctor
+        # -- 5 observaciones y 7 días -- si no, no se publica nada y esta
+        # prueba no llegaría a comprobar lo suyo. El precio se repite a
+        # propósito: `historico_propio` agrupa por precio, así que la
+        # referencia sigue siendo exactamente $20.000.
+        for d in (12, 11, 10, 9):
+            hector2_db.registrar_precio_visto(self.con, u, 20_000,
+                                              "declarado_aliado", visto_en=ahora - d * DIA)
         # Lo que hace el handler justo antes de armar el aviso:
         hector2_db.registrar_precio_visto(self.con, u, 5_000,
                                           "declarado_aliado", visto_en=ahora)
@@ -467,9 +473,14 @@ class TestLinkDelProductoYMiniatura(unittest.TestCase):
         try:
             # Con sondeo propio: sin él ya no se publica nada (ver
             # `test_sin_sondeo_propio_NO_se_publica`), y esta prueba es
-            # sobre la miniatura, no sobre la referencia.
-            hector2_db.registrar_precio_visto(
-                con, "https://www.paris.cl/x.html", 536_677, "declarado_aliado")
+            # sobre la miniatura, no sobre la referencia. Tiene que alcanzar
+            # la vara de Héctor (5 observaciones, 7 días) o no habría aviso
+            # que mirar.
+            ahora = int(time.time())
+            for d in (14, 12, 10, 8, 6):
+                hector2_db.registrar_precio_visto(
+                    con, "https://www.paris.cl/x.html", 536_677,
+                    "declarado_aliado", visto_en=ahora - d * DIA)
             r = {"url": "https://www.paris.cl/x.html", "nombre": "Refrigerador LG",
                  "tienda": "paris.cl", "precio_declarado": 41_750,
                  "precio_real": None, "referencia": None,

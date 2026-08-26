@@ -270,18 +270,60 @@ def registrar_precio_visto(con, url, precio, fuente, tienda=None, visto_en=None)
         return False
 
 
-def historico_propio(con, url, limite=4):
-    """Lo que NOSOTROS vimos costar esta ficha, de más reciente a más antiguo.
+# La ventana por defecto del sondeo propio, en días.
+#
+# (Claude, 25-ago-2026) NO es la fuente de verdad: el llamador pasa
+# `baseprecios.VENTANA_HISTORIAL_DIAS`, que es el número que manda en todo el
+# sistema. Este default existe sólo para que un llamador que lo olvide filtre
+# igual, en vez de leerse la tabla entera -- que es justo el bug que había.
+VENTANA_PROPIA_DIAS = 30
+
+
+def historico_propio(con, url, limite=4, dias=VENTANA_PROPIA_DIAS, ahora=None):
+    """Lo que NOSOTROS vimos costar esta ficha, de más reciente a más antiguo,
+    DENTRO DE LA VENTANA de `dias`.
 
     Es el respaldo para las tiendas que no están en el catálogo de Héctor:
     ahí `baseprecios` no tiene nada que decir, pero estas observaciones se
     acumulan igual desde el primer mensaje que llega.
+
+    ── LA VENTANA NO ES DECORACIÓN (Claude, 25-ago-2026) ──────────────────
+    Esta consulta no tenía NINGUNA condición de fecha, y el mensaje que se
+    publica dice textualmente "sondeo propio de los últimos 30 días". O sea
+    que la frase podía estar respaldada por una observación de hace un año.
+    Reproducido: una sola observación de hace 200 días alcanzaba para
+    publicar un -70%.
+
+    Es el mismo criterio de la Directiva Omnibus que `baseprecios` ya adoptó
+    para la ventana y para la referencia. Acá faltaba.
     """
+    desde = int(ahora if ahora is not None else time.time()) - int(dias) * 86400
     filas = con.execute(
         "SELECT precio, MAX(visto_en) AS visto_en FROM precios_vistos "
-        "WHERE url=? GROUP BY precio ORDER BY visto_en DESC LIMIT ?",
-        (url, limite)).fetchall()
+        "WHERE url=? AND visto_en >= ? GROUP BY precio "
+        "ORDER BY visto_en DESC LIMIT ?",
+        (url, desde, limite)).fetchall()
     return [(f["precio"], f["visto_en"]) for f in filas]
+
+
+def respaldo_propio(con, url, dias=VENTANA_PROPIA_DIAS, ahora=None):
+    """Cuánta evidencia propia hay para esta ficha: (observaciones, días).
+
+    `observaciones` son las lecturas guardadas dentro de la ventana y `días`
+    el tramo que cubren, de la más antigua a la más reciente.
+
+    Existe porque `historico_propio` agrupa POR PRECIO (`GROUP BY precio`) y
+    corta en `limite`: sirve para mostrar el sondeo, y no para medir cuánto
+    respaldo hay detrás. Dos cosas distintas que se estaban usando como una.
+    """
+    desde = int(ahora if ahora is not None else time.time()) - int(dias) * 86400
+    fila = con.execute(
+        "SELECT COUNT(*) AS n, MIN(visto_en) AS primero, MAX(visto_en) AS ultimo "
+        "FROM precios_vistos WHERE url=? AND visto_en >= ?",
+        (url, desde)).fetchone()
+    if not fila or not fila["n"]:
+        return 0, 0.0
+    return fila["n"], (fila["ultimo"] - fila["primero"]) / 86400.0
 
 
 def _actualizar_confianza(con, canal, veredicto, ahora):
