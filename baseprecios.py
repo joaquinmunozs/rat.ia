@@ -189,7 +189,15 @@ RUIDO_NO_COMERCIABLE = re.compile(
     r"entrada[s]?\b(?=[^\n]*\b(?:concierto|evento|show|festival|teatro|"
     r"estadio|partido|tour)\b)|"
     r"ticket[s]?\b|concierto\b|"
-    r"tarjeta\s*de\s*regalo|gift\s*card|giftcard|"
+    # Las variantes salieron de probar el patrón contra cómo nombra esto el
+    # retail chileno de verdad: "Tarjeta Regalo Jumbo" (sin el "de"), "Vale
+    # Regalo Sodimac" y "eGift Card Cencosud" se colaban las tres.
+    # NO se agrega "tarjeta prepago": una SIM prepago es un producto real y
+    # vendible. Y todos exigen la palabra que los delata pegada al lado, así
+    # que "Papel de Regalo", "Bolsa de Regalo" y "Set de Regalo" -- que son
+    # productos de verdad -- siguen pasando.
+    r"tarjeta\s*(?:de\s*)?regalo|vale\s*(?:de\s*)?regalo|"
+    r"e-?gift(?:\s*card)?|gift\s*card|giftcard|"
     r"suscripci[oó]n|membres[íi]a|plan\s*(?:mensual|anual)\b|"
     r"curso[s]?\s+(?:de\b|online|virtual|presencial|e-?learning)|"
     r"capacitaci[oó]n\b|"

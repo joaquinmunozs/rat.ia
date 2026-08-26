@@ -123,7 +123,30 @@ class TestSiSeDescartaLoQueNoEsProducto(unittest.TestCase):
         ("Seguro Automotriz Cobertura Total", "seguro automotriz"),
         ("Seguro de Vida Individual", "seguro de vida"),
         ("Curso Online de Excel", "curso online"),
+        # Como nombra esto el retail chileno de verdad. Las tres primeras se
+        # colaban con el patron heredado de `hector2_filtro`.
+        ("Tarjeta Regalo Jumbo 20.000", "tarjeta regalo"),
+        ("Vale Regalo Sodimac", "vale regalo"),
+        ("eGift Card Cencosud", "egift card"),
+        ("GiftCard Paris", "giftcard"),
     ]
+
+    PRODUCTOS_DE_REGALO_QUE_SI_SE_VENDEN = [
+        "Papel de Regalo Navideno 5m",
+        "Bolsa de Regalo Kraft x10",
+        "Caja de Regalo Carton",
+        "Set de Regalo Perfume Mujer",
+        "Mono de Regalo Autoadhesivo",
+        # Una SIM prepago es un producto real: por eso NO se agrego
+        # "tarjeta prepago" al patron.
+        "Tarjeta Prepago Entel SIM",
+        "Tarjeta Madre ASUS B550",
+    ]
+
+    def test_lo_que_solo_se_regala_no_es_una_gift_card(self):
+        for nombre in self.PRODUCTOS_DE_REGALO_QUE_SI_SE_VENDEN:
+            ruido, motivo = baseprecios.es_ruido(nombre)
+            self.assertFalse(ruido, "%s se descarto por %r" % (nombre, motivo))
 
     def test_se_reconocen_y_dicen_por_que(self):
         for nombre, esperado in self.NO_COMERCIABLE:
