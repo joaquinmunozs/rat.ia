@@ -128,6 +128,14 @@ VARIABLES DE ENTORNO
     VIGIA_TOPICO_ERRORES_GRAVES    caída 85%+. Tópico nuevo (25-ago-2026).
                                    Si falta, todo el 70%+ vuelve a caer junto
                                    en VIGIA_TOPICO_ERRORES como antes.
+    RATIA_IG_AUTO                  el selector de Instagram dentro de este
+                                   mismo proceso (25-ago-2026). Sin definir,
+                                   la tarea NI ARRANCA y nada cambia.
+                                   "ensayo" = corre y loguea qué publicaría,
+                                   sin publicar. "1" = publica de verdad.
+                                   Poner "ensayo" primero y mirar los logs no
+                                   es una formalidad: es la única forma de ver
+                                   qué elige antes de que Instagram lo vea.
     HECTOR2_DB                     dónde vive hector2.db. En Railway TIENE que
                                    apuntar al volumen (/data): sin eso, cada
                                    deploy borraba el historial entero.
@@ -245,6 +253,92 @@ async def _tarea_refresco_base(intervalo=None):
                 print("[hector2] base de Héctor refrescada")
         except Exception as e:                                # noqa: BLE001
             print("[hector2] fallo refrescando la base: %s" % str(e)[:150])
+
+
+# ── EL SELECTOR DE INSTAGRAM, EN EL MISMO PROCESO ───────────────────────────
+#
+# (Claude, 25-ago-2026) Cierra "engancharlo a algo que corra solo" de la
+# bitácora del 25-ago (tarde). Va acá y no en un cron aparte porque este
+# proceso ya está levantado 24/7 en Railway, ya mantiene la copia de
+# `precios.db` fresca (`_tarea_refresco_base`) y ya tiene abierta la
+# `hector2.db` de la que el selector saca sus candidatos. Un cron aparte
+# tendría que rehacer las tres cosas.
+#
+# ── POR QUÉ POR DEFECTO NO HACE NADA ────────────────────────────────────────
+# `RATIA_IG_AUTO` decide, y sin ella la tarea NI SIQUIERA ARRANCA: el
+# comportamiento queda idéntico al de hoy. Los tres escalones:
+#
+#     (sin definir)  la tarea no existe. Nada cambia.
+#     "ensayo"       corre las pasadas y loguea qué publicaría. NO publica.
+#     "1"            publica de verdad.
+#
+# El escalón del medio es el que importa y por eso existe: deja mirar en los
+# logs de Railway qué habría salido, durante días si hace falta, antes de que
+# nada llegue a Instagram. Es la misma regla que ya traía `ratia_publicar` --
+# "un selector automático que publica solo, sin que nadie lo haya visto correr
+# en producción al menos una vez, es el tipo de incidente que ya se evitó una
+# vez con esa misma regla" (bitácora del 25-ago).
+RATIA_IG_INTERVALO_SEG = 600
+
+
+def _ig_modo():
+    """"" (apagado) | "ensayo" | "1"."""
+    return (os.environ.get("RATIA_IG_AUTO") or "").strip().lower()
+
+
+def _pasada_instagram(confirmar):
+    """Una pasada del selector, con conexiones PROPIAS.
+
+    No reusa `_ESTADO["con_hector"]` / `["con_h2"]` a propósito. Esas están
+    serializadas con `_DB_LOCK`, y una pasada del selector baja fichas, llama
+    a un modelo de imágenes y publica: tener el lock tomado todo ese rato
+    dejaría el reenvío del aliado congelado durante minutos. Es el mismo error
+    que el 11-ago mantenía el lock de escritura tomado durante descargas HTTP.
+    `hector2.db` está en WAL, así que una segunda conexión convive sin
+    problema, y la de Héctor se abre en modo `ro`.
+
+    Import perezoso: si algo del selector no importa (una dependencia que
+    falta en el contenedor, por ejemplo), el bot de reenvío -- que es lo que
+    de verdad está en producción -- no se cae con él.
+    """
+    import ratia_ig_selector
+
+    ruta_precios, _ = descargar_base_hector.asegurar()
+    con_precios = hector2_filtro.abrir_solo_lectura(ruta_precios)
+    con_h2 = hector2_db.abrir()
+    try:
+        return ratia_ig_selector.una_pasada(
+            con_precios, con_h2, confirmar=confirmar,
+            log=lambda m: print("[ratia-ig] %s" % m))
+    finally:
+        con_precios.close()
+        con_h2.close()
+
+
+async def _tarea_selector_instagram(intervalo=None):
+    """Cada `intervalo`, mira si algo cumple su ventana y le toca salir.
+
+    El intervalo no es el retraso de publicación: las ventanas reales (30 min
+    para errores, 1-2 h para ofertas, corte 23:30) las decide
+    `ratia_seleccion`, y esta tarea sólo pregunta seguido. 10 minutos da
+    granularidad de sobra para una ventana de 30 y no gasta nada.
+    """
+    modo = _ig_modo()
+    if not modo:
+        return
+    intervalo = intervalo or RATIA_IG_INTERVALO_SEG
+    confirmar = (modo == "1")
+    print("[ratia-ig] selector activo cada %ds -- %s"
+          % (intervalo, "PUBLICA de verdad" if confirmar else "ENSAYO, no publica"))
+    while True:
+        await asyncio.sleep(intervalo)
+        try:
+            await asyncio.to_thread(_pasada_instagram, confirmar)
+        except Exception as e:                                # noqa: BLE001
+            # Una pasada que falla no puede matar la tarea: si muere, deja de
+            # publicarse en Instagram y nadie se entera (el reenvío a Telegram
+            # sigue andando, así que el servicio "se ve" sano).
+            print("[ratia-ig] fallo la pasada: %s" % str(e)[:200])
 
 
 async def _tarea_ajustar_ritmos(intervalo=3600):
@@ -915,6 +1009,7 @@ def main():
     # ese camino no exista en el flujo normal.
     client.loop.create_task(_tarea_refresco_base())
     client.loop.create_task(_tarea_ajustar_ritmos())
+    client.loop.create_task(_tarea_selector_instagram())
     client.run_until_disconnected()
     return 0
 

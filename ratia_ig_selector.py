@@ -161,6 +161,16 @@ def _foto_de(c: sel.Candidato, bajar_fn=None, extraer_fn=None) -> str:
 
 
 def main():
+    # Va acá y no arriba a propósito: `reenviar_ofertas` importa este módulo
+    # para su tarea periódica, y reconfigurar la salida de OTRO proceso desde
+    # un import es un efecto secundario que nadie espera. Corriéndolo a mano
+    # en Windows sí hace falta -- sin esto, `--help` revienta con
+    # UnicodeEncodeError al imprimir este docstring en una consola cp1252.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):
+        pass
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--confirmar", action="store_true",
                     help="Publica de verdad. Sin esto, sólo arma y loguea.")
