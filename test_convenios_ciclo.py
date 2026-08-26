@@ -169,21 +169,23 @@ class TestTopes(unittest.TestCase):
         salida = cc.aplicar_topes(pend)
         self.assertEqual(len(salida), cc.TOPE_TELEGRAM_POR_PASADA)
 
-    def test_instagram_max_2_al_dia(self):
+    def test_instagram_max_1_al_dia(self):
+        # 26-ago-2026: Joaquín pidió 1 convenio/día en Instagram (parejo con
+        # Rat.IA de retail) para ponerse al día sin saturar el feed.
         pend = self._lote(50, ["telegram_nuevo", "instagram_nuevo"])
         salida = cc.aplicar_topes(pend)
         con_ig = [s for s in salida if any(a.startswith("instagram_") for a in s[1])]
-        self.assertEqual(len(con_ig), 2)
+        self.assertEqual(len(con_ig), 1)
 
     def test_instagram_respeta_lo_ya_publicado_hoy(self):
         pend = self._lote(50, ["instagram_nuevo"])
-        salida = cc.aplicar_topes(pend, ya_publicados_ig_hoy=2)
+        salida = cc.aplicar_topes(pend, ya_publicados_ig_hoy=1)
         self.assertEqual(salida, [])
 
     def test_gana_el_de_mayor_descuento(self):
         pend = [(self._Conv(10, "bajo"), ["instagram_nuevo"]),
                 (self._Conv(80, "alto"), ["instagram_nuevo"])]
-        salida = cc.aplicar_topes(pend, ya_publicados_ig_hoy=1)
+        salida = cc.aplicar_topes(pend, ya_publicados_ig_hoy=0)
         self.assertEqual(len(salida), 1)
         self.assertEqual(salida[0][0].clave, "alto")
 

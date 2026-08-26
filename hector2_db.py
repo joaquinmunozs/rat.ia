@@ -554,6 +554,14 @@ def marcar_descartado(con, url, tipo, motivo):
     con.commit()
 
 
+def total_publicados(con) -> int:
+    """Cuántas piezas se publicaron en total -- para
+    `ratia_carrusel.template_de_turno`, que necesita un contador que nunca
+    se reinicie (a diferencia de `publicados_hoy`, que sí)."""
+    f = con.execute("SELECT COUNT(*) AS n FROM ig_candidatos WHERE estado='publicado'").fetchone()
+    return f["n"] if f else 0
+
+
 def vencer_candidatos(con, ahora, vence_oferta_seg, vence_error_seg):
     """Pasa a 'vencido' lo pendiente que ya se pasó de su ventana. Se corre
     una vez por pasada del selector -- no hace falta un cron aparte."""

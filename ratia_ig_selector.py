@@ -57,6 +57,7 @@ import descubrir
 import extractor
 import hector2_db
 import hector2_filtro
+import ratia_carrusel
 import ratia_publicar
 import ratia_seleccion as sel
 
@@ -106,12 +107,7 @@ def una_pasada(con_precios, con_h2, confirmar=False, ahora=None, log=print):
     for c in listos:
         log("[ratia-ig] %s | %s | -%.0f%% | %s (%s)" % (
             c.tipo.upper(), c.tienda, c.caida * 100, c.nombre, c.url))
-        r = ratia_publicar.publicar_oferta(
-            nombre_producto=c.nombre or "", precio_antes=c.referencia,
-            precio_ahora=c.precio, foto=_foto_de(c),
-            cuenta_id=os.environ.get("RATIA_IG_CUENTA_ID", ""),
-            tienda=c.tienda or "", tipo=c.tipo,
-            confirmado=confirmar, log=log)
+        r = _armar_y_publicar_carrusel(con_h2, c, confirmar=confirmar, log=log)
         resultados.append((c, r))
         if r.get("ok") and (confirmar and r.get("publicado")):
             hector2_db.marcar_publicado(
@@ -121,6 +117,35 @@ def una_pasada(con_precios, con_h2, confirmar=False, ahora=None, log=print):
             hector2_db.marcar_descartado(
                 con_h2, c.url, c.tipo, r.get("motivo", "error desconocido"))
     return resultados
+
+
+def _armar_y_publicar_carrusel(con_h2, c: sel.Candidato, confirmar: bool, log=print) -> dict:
+    """Arma el carrusel de 2 slides (26-ago-2026) y lo publica si `confirmar`.
+
+    Mismo contrato que `ratia_publicar.publicar_oferta`: siempre arma la
+    pieza (gasta créditos de Kie igual que antes), pero sólo llama a Blotato
+    si `confirmar=True`. Reemplaza a `publicar_oferta` (1 imagen) -- ver
+    `ratia_carrusel.py` para el porqué del diseño de 2 slides.
+    """
+    template = ratia_carrusel.template_de_turno(hector2_db.total_publicados(con_h2))
+    pieza = ratia_carrusel.armar(
+        template, titulo=c.nombre or "", tienda=c.tienda or "",
+        precio_antes=c.referencia, precio_ahora=c.precio,
+        foto=_foto_de(c), tipo=c.tipo, log=log)
+    if not pieza:
+        return {"ok": False, "publicado": False, "motivo": "no se pudo armar el carrusel"}
+
+    if not confirmar:
+        log("[ratia-ig] carrusel listo. NO se publicó: falta confirmar=True.")
+        return {"ok": True, "publicado": False, "pieza": pieza}
+
+    cuenta_id = os.environ.get("RATIA_IG_CUENTA_ID", "")
+    try:
+        envio = ratia_publicar.publicar_carrusel(
+            pieza["slides"], pieza["caption"], cuenta_id, log=log)
+    except Exception as e:                                    # noqa: BLE001
+        return {"ok": False, "publicado": False, "motivo": str(e)[:200]}
+    return {"ok": True, "publicado": True, "pieza": pieza, "submission": envio}
 
 
 def _foto_de(c: sel.Candidato, bajar_fn=None, extraer_fn=None) -> str:

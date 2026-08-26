@@ -341,6 +341,52 @@ async def _tarea_selector_instagram(intervalo=None):
             print("[ratia-ig] fallo la pasada: %s" % str(e)[:200])
 
 
+CONVENIOS_INTERVALO_SEG = 4 * 3600  # 4h -- "2-4 veces al día" (ver convenios_monitor.py)
+
+
+def _convenios_modo():
+    """"" (apagado) | "ensayo" | "1". Mismo patrón que `_ig_modo`."""
+    return (os.environ.get("CONVENIOS_IG_AUTO") or "").strip().lower()
+
+
+def _pasada_convenios(confirmar):
+    """Una pasada del monitor de convenios, con conexión PROPIA -- mismo
+    motivo que `_pasada_instagram`: baja 16 páginas y llama a Kie/Blotato,
+    no puede competir por `_DB_LOCK` con el reenvío del aliado."""
+    import convenios_monitor
+
+    con_h2 = hector2_db.abrir()
+    try:
+        return convenios_monitor.una_pasada(
+            con_h2, confirmar=confirmar,
+            log=lambda m: print("[convenios] %s" % m))
+    finally:
+        con_h2.close()
+
+
+async def _tarea_convenios(intervalo=None):
+    """Cada `intervalo`, revisa las 16 páginas de Pangui y avisa/publica lo
+    que corresponda. Pedido de Joaquín, 26-ago-2026: ponerse al día con las
+    promos bancarias vigentes, 1 en Instagram por día (`TOPE_INSTAGRAM_POR_DIA`
+    en convenios_ciclo.py), hasta fin de agosto -- después sigue andando
+    igual, ya no es "ponerse al día" sino el ritmo normal."""
+    modo = _convenios_modo()
+    if not modo:
+        return
+    intervalo = intervalo or CONVENIOS_INTERVALO_SEG
+    confirmar = (modo == "1")
+    print("[convenios] monitor activo cada %ds -- %s"
+          % (intervalo, "PUBLICA de verdad" if confirmar else "ENSAYO, no publica"))
+    while True:
+        try:
+            await asyncio.to_thread(_pasada_convenios, confirmar)
+        except Exception as e:                                # noqa: BLE001
+            # Igual que `_tarea_selector_instagram`: una pasada que falla no
+            # puede matar la tarea entera.
+            print("[convenios] fallo la pasada: %s" % str(e)[:200])
+        await asyncio.sleep(intervalo)
+
+
 async def _tarea_ajustar_ritmos(intervalo=3600):
     """Una vez por hora, no por mensaje -- perseguir ruido de corto plazo
     haría que el umbral bailara todo el día en vez de converger. Ver el
@@ -1010,6 +1056,7 @@ def main():
     client.loop.create_task(_tarea_refresco_base())
     client.loop.create_task(_tarea_ajustar_ritmos())
     client.loop.create_task(_tarea_selector_instagram())
+    client.loop.create_task(_tarea_convenios())
     client.run_until_disconnected()
     return 0
 

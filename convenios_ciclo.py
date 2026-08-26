@@ -58,7 +58,10 @@ VENTANA_ULTIMA_SEMANA_DIAS = 7
 # resuelve el arranque en frío -- el resto no se pierde, entra en las
 # pasadas siguientes, priorizado por descuento.
 TOPE_TELEGRAM_POR_PASADA = 25
-TOPE_INSTAGRAM_POR_DIA = 2
+# 26-ago-2026: Joaquín pidió explícitamente "1 diaria" para ponerse al día
+# con las promos vigentes de bancos/cadenas sin saturar el feed de Rat.IA
+# (antes 2 -- ver docs/BITACORA-2026-08-26.md).
+TOPE_INSTAGRAM_POR_DIA = 1
 
 # Las marcas/comercios que Joaquín nombró explícitamente como el objetivo
 # ("alianzas realmente importantes"). Un convenio de una marca de esta

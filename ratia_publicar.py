@@ -141,6 +141,45 @@ def publicar_media(pieza: bytes, texto: str, cuenta_id: str,
     return envio
 
 
+def publicar_carrusel(slides: list[bytes], texto: str, cuenta_id: str,
+                      pagina_id: str | None = None, plataforma: str = "instagram",
+                      log=print) -> dict:
+    """Sube 2+ piezas YA ARMADAS y publica un carrusel. Sin generarlas.
+
+    (Claude, 26-ago-2026) Mismo contrato que `publicar_media`, pero
+    `mediaUrls` lleva una URL por slide en vez de una sola -- así es como
+    Blotato arma un carrusel en Instagram. Lo usa `ratia_ig_selector` con
+    `ratia_carrusel.armar()` (2 slides: producto + cierre fijo).
+
+    Quien llama es responsable de haber verificado la pieza ANTES: acá ya
+    no hay red de seguridad, esto publica.
+    """
+    import base64
+    urls = []
+    for i, pieza in enumerate(slides, 1):
+        log("[ratia-pub] subiendo slide %d/%d a Blotato…" % (i, len(slides)))
+        data_uri = "data:image/png;base64," + base64.b64encode(pieza).decode()
+        media = _pedir("/media", {"url": data_uri}, metodo="POST")
+        url_media = media.get("url") or media.get("mediaUrl")
+        if not url_media:
+            raise RuntimeError("Blotato no devolvió URL de la media (slide %d): %s" % (i, media))
+        urls.append(url_media)
+
+    destino = {"targetType": plataforma}
+    if pagina_id:
+        destino["pageId"] = pagina_id
+
+    payload = {"post": {
+        "accountId": cuenta_id,
+        "target": destino,
+        "content": {"platform": plataforma, "text": texto, "mediaUrls": urls},
+    }}
+    log("[ratia-pub] publicando carrusel de %d slides en %s…" % (len(urls), plataforma))
+    envio = _pedir("/posts", payload, metodo="POST")
+    log("[ratia-pub] publicado: %s" % envio)
+    return envio
+
+
 def publicar_oferta(nombre_producto: str, precio_antes: float, precio_ahora: float,
                     foto: str | bytes, cuenta_id: str, tienda: str,
                     tipo: str = "oferta", pagina_id: str | None = None,
