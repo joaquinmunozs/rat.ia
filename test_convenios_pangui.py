@@ -126,5 +126,72 @@ class TestSinOfertas(unittest.TestCase):
                                               "u", emisor="X"), [])
 
 
+class TestComercioRealEnPaginaDeBanco(unittest.TestCase):
+    """(Claude, 26-ago-2026) En /bancos/{x} la cabecera repite el nombre del
+    banco antes de la oferta real: "Banco de Chile 80% en Clínica Dental
+    3Dent Más de 30 años...". Sin esto, `comercio` salía "Banco de Chile" --
+    el mismo texto que `emisor`, publicado como "Banco de Chile + Banco de
+    Chile" en una pieza real de Instagram. Los textos de abajo son EXACTOS,
+    copiados de /bancos/banco-de-chile en vivo (no inventados)."""
+
+    def test_saca_el_comercio_real_no_el_emisor_repetido(self):
+        r = cp._comercio_real_pagina_banco(
+            "Banco de Chile 80% en Clínica Dental 3Dent Más de 30 años "
+            "cuidando sonrisas en Concepción.", "Banco de Chile")
+        self.assertIsNotNone(r)
+        comercio, resto = r
+        self.assertEqual(comercio, "Clínica Dental 3Dent")
+        self.assertTrue(resto.startswith("Clínica Dental 3Dent"))
+
+    def test_no_se_come_una_apertura_de_marketing_capitalizada(self):
+        # "Más" empieza con mayúscula por ser inicio de oración -- no es
+        # parte del nombre del comercio, y antes del 26-ago se colaba.
+        comercio = cp._acotar_nombre_comercio(
+            "Clínica Dental 3Dent Más de 30 años cuidando sonrisas.")
+        self.assertEqual(comercio, "Clínica Dental 3Dent")
+
+    def test_conserva_conectores_dentro_del_nombre(self):
+        comercio = cp._acotar_nombre_comercio(
+            "Portal Ortodoncia de Chile Portal de Ortodoncia de Chile "
+            "cuenta con sedes en Santiago.")
+        self.assertEqual(comercio, "Portal Ortodoncia de Chile")
+
+    def test_admite_un_digito_al_inicio_de_palabra(self):
+        # "3Dent" no empieza con mayúscula (empieza con "3") -- sin admitir
+        # dígitos, el nombre se cortaba en "Clínica Dental".
+        comercio = cp._acotar_nombre_comercio("3Dent Más de 30 años.")
+        self.assertEqual(comercio, "3Dent")
+
+    def test_si_no_calza_el_patron_devuelve_none_no_revienta(self):
+        # "Sobre el arancel de ONEDE..." no trae "{pct}% en" -- tiene que
+        # caer con gracia al heurístico genérico, no lanzar ni devolver
+        # basura.
+        r = cp._comercio_real_pagina_banco(
+            "Banco de Chile Sobre el arancel de ONEDENT.", "Banco de Chile")
+        self.assertIsNone(r)
+
+    def test_solo_aplica_cuando_la_cabecera_empieza_con_el_emisor(self):
+        # Una página de TIENDA (`comercio` fijo) nunca debería llegar acá,
+        # pero si algo la llamara igual, no debe inventar un match falso.
+        r = cp._comercio_real_pagina_banco(
+            "McDonald's 40% de descuento en la App.", "Banco de Chile")
+        self.assertIsNone(r)
+
+    def test_extraer_convenios_de_punta_a_punta_ya_no_duplica_el_emisor(self):
+        html = (
+            "<html><body>ofertas activas 1 ofertas activas · Actualizado "
+            "hoy 80 % de descuento Salud Banco de Chile 80% en Clínica "
+            "Dental 3Dent Más de 30 años cuidando sonrisas en Concepción. "
+            "Verificado hoy Ver detalle</body></html>"
+        )
+        c = cp.extraer_convenios(html, "https://panguiapp.com/bancos/banco-de-chile",
+                                 emisor="Banco de Chile")
+        self.assertEqual(len(c), 1)
+        self.assertEqual(c[0].comercio, "Clínica Dental 3Dent")
+        self.assertNotEqual(c[0].comercio, c[0].emisor,
+                            "el comercio no puede ser igual al emisor -- ese es el bug original")
+        self.assertTrue(c[0].titulo.startswith("Clínica Dental 3Dent"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

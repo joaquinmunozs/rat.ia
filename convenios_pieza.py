@@ -48,15 +48,110 @@ import json
 import os
 import urllib.request
 from datetime import date
+from pathlib import Path
+
+from PIL import Image, ImageDraw
 
 import ratia_pieza_ia as base
 
 INTENTOS = 3
 LIMA_HEX = base.LIMA_HEX if hasattr(base, "LIMA_HEX") else "#B9E606"
 
+# ── Logo real del EMISOR (26-ago-2026) ──────────────────────────────────────
+#
+# Joaquín, viendo la primera pieza real publicada: "no puede ser que las
+# publicaciones de bancos no incluyan el logo oficial". El modelo NUNCA
+# dibuja el logo (ver la regla más abajo, no se negocia -- pedirle a
+# gpt-image-2 que dibuje el isotipo de un banco real da una versión
+# deformada, que es peor que no ponerlo). En cambio se reserva un badge
+# vacío y se pega el archivo REAL encima con Pillow -- mismo patrón que
+# el logo/personaje de Bárbara y la foto de producto de Rat.IA retail.
+#
+# Sólo el EMISOR (el banco/billetera): son ~15 marcas fijas, reusables en
+# TODOS los convenios. El `comercio` es casi siempre de cola larga
+# ("Clínica Dental 3Dent") -- sin una fuente confiable por cada uno, pegar
+# un logo ahí es que gastaría más esfuerzo del que vale.
+LOGOS_DIR = Path(__file__).resolve().parent / "assets" / "logos_convenios"
+_LOGO_SLUG = {
+    "banco de chile": "banco_de_chile",
+    "bancoestado": "bancoestado",
+    "banco estado": "bancoestado",
+    "bci": "bci",
+    "lider bci": "bci",
+    "santander": "santander",
+    "cmr falabella": "cmr_falabella",
+    "cencosud scotiabank": "scotiabank",
+    "scotiabank": "scotiabank",
+    "mcdonald's": "mcdonalds",
+    "mcdonalds": "mcdonalds",
+    "kfc": "kfc",
+    "wendy's": "wendys",
+    "wendys": "wendys",
+    "turbus": "turbus",
+    "flixbus": "flixbus",
+    "farmacias cruz verde": "farmacias_cruz_verde",
+    "farmacias ahumada": "farmacias_ahumada",
+}
+
+
+def logo_de(nombre: str) -> Path | None:
+    """La ruta al logo real de `nombre` (emisor), o None si no hay uno
+    curado -- en ese caso la pieza sigue siendo sólo tipográfica, como
+    antes del 26-ago-2026. Nunca revienta por un nombre desconocido."""
+    slug = _LOGO_SLUG.get((nombre or "").strip().lower())
+    if not slug:
+        return None
+    ruta = LOGOS_DIR / f"{slug}.png"
+    return ruta if ruta.exists() else None
+
+
+def pegar_logo_badge(pieza: bytes, ruta_logo: Path) -> bytes:
+    """Pega el logo real en una tarjeta blanca redondeada, arriba a la
+    derecha -- una tarjeta blanca funciona sobre CUALQUIER color de fondo
+    (bancos como Banco de Chile son texto azul oscuro sobre transparente:
+    ilegible pegado directo sobre negro)."""
+    base_img = Image.open(io.BytesIO(pieza)).convert("RGBA")
+    w, h = base_img.size
+    logo = Image.open(ruta_logo).convert("RGBA")
+
+    card_w = round(w * 0.30)
+    pad = round(card_w * 0.14)
+    logo_w = card_w - pad * 2
+    ratio = logo_w / logo.width
+    logo_h = round(logo.height * ratio)
+    max_logo_h = round(card_w * 0.42)
+    if logo_h > max_logo_h:
+        ratio = max_logo_h / logo.height
+        logo_w = round(logo.width * ratio)
+        logo_h = max_logo_h
+    logo = logo.resize((max(1, logo_w), max(1, logo_h)), Image.LANCZOS)
+
+    card_h = logo_h + pad * 2
+    card = Image.new("RGBA", (card_w, card_h), (255, 255, 255, 255))
+    mascara = Image.new("L", (card_w, card_h), 0)
+    ImageDraw.Draw(mascara).rounded_rectangle(
+        [0, 0, card_w - 1, card_h - 1], radius=round(card_h * 0.18), fill=255)
+    card.putalpha(mascara)
+    card.alpha_composite(logo, ((card_w - logo_w) // 2, (card_h - logo_h) // 2))
+
+    margen = round(w * 0.06)
+    salida = base_img.copy()
+    salida.alpha_composite(card, (w - card_w - margen, margen))
+    buf = io.BytesIO()
+    salida.convert("RGB").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+_ZONA_LOGO = """RESERVED BADGE AREA — top-right corner, about 30% of the frame's width and
+14% of its height: this area must look EXACTLY like the rest of the
+background — same colour, same texture, continuous with everything around
+it. Do NOT draw a box, card, panel, chip, text or icon there. A real brand
+logo file gets placed on top of this untouched area afterward — any visible
+shape or colour shift there is a mistake."""
+
 
 def _prompt(emisor: str, comercio: str, descuento: int, condicion: str,
-            vigencia: str, color: str) -> str:
+            vigencia: str, color: str, con_logo: bool) -> str:
     fondo = "negro puro (#0A0A0A)" if color == "negro" else "blanco puro (#FFFFFF)"
     texto = "blanco" if color == "negro" else "negro"
     return f"""Diseña una pieza cuadrada de Instagram para anunciar un convenio de
@@ -73,7 +168,7 @@ sin traducir, sin cambiar ni un dígito):
 · Bajo el porcentaje, mediano: "DE DESCUENTO"
 · Más abajo, chico: "{condicion}"
 · Al pie, muy chico y discreto: "{vigencia}"
-
+{"" if not con_logo else chr(10) + _ZONA_LOGO + chr(10)}
 REGLA CRÍTICA — NO DIBUJES NINGÚN LOGO NI ISOTIPO.
 No dibujes el logo de {comercio}, ni el de {emisor}, ni de ninguna marca,
 banco o tarjeta. Nada de arcos dorados, aislados de bencinera, tarjetas de
@@ -191,6 +286,21 @@ def vigencia_texto(vigencia_hasta: date | None, es_recurrente: bool) -> str:
     return "Hasta el %s" % vigencia_hasta.strftime("%d-%m-%Y")
 
 
+def _con_logo_si_corresponde(pieza: bytes, ruta_logo: Path | None, log=print) -> bytes:
+    """Pega el logo real si hay uno curado para este emisor. Si el pegado
+    falla por lo que sea (archivo corrupto, etc.), se publica la pieza
+    IGUAL sin logo -- un logo es una mejora, no puede tumbar una pieza ya
+    verificada y lista."""
+    if not ruta_logo:
+        return pieza
+    try:
+        return pegar_logo_badge(pieza, ruta_logo)
+    except Exception as e:                                    # noqa: BLE001
+        log("[convenios-pieza] no se pudo pegar el logo (%s), se publica sin él: %s"
+            % (ruta_logo.name, str(e)[:150]))
+        return pieza
+
+
 def generar_pieza_convenio(emisor: str, comercio: str, descuento: int,
                             dia_semana: str | None = None,
                             canal: str | None = None,
@@ -210,9 +320,11 @@ def generar_pieza_convenio(emisor: str, comercio: str, descuento: int,
             "pieza diga el descuento y las marcas correctas, y publicar el "
             "nombre de un banco sin verificar no es una opción.")
 
+    ruta_logo = logo_de(emisor)
     prompt = _prompt(emisor, comercio, descuento,
                      condicion_texto(dia_semana, canal),
-                     vigencia_texto(vigencia_hasta, es_recurrente), color)
+                     vigencia_texto(vigencia_hasta, es_recurrente), color,
+                     con_logo=ruta_logo is not None)
 
     for intento in range(1, INTENTOS + 1):
         creada = base._pedir("/jobs/createTask", {
@@ -243,13 +355,17 @@ def generar_pieza_convenio(emisor: str, comercio: str, descuento: int,
             continue
 
         if not verificar:
-            return pieza
+            return _con_logo_si_corresponde(pieza, ruta_logo, log)
 
         ok, detalle = _verificar_datos(pieza, emisor, comercio, descuento,
                                        anthropic_key)
         if ok:
             log("[convenios-pieza] pieza lista y verificada (intento %d)" % intento)
-            return pieza
+            # El logo real se pega DESPUÉS de verificar -- `_verificar_datos`
+            # comprueba que el MODELO no haya dibujado ningún logo
+            # (`hay_logos`); pegar el archivo real antes confundiría esa
+            # verificación con un falso positivo.
+            return _con_logo_si_corresponde(pieza, ruta_logo, log)
         log("[convenios-pieza] intento %d descartado: %s" % (intento, detalle))
 
     log("[convenios-pieza] ERROR: no se logró una pieza correcta — NO se publica.")

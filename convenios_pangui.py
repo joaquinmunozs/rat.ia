@@ -126,20 +126,103 @@ def _fecha_de(texto_hasta: str) -> date | None:
         return None
 
 
-def _categoria_y_comercio_pangui(cabecera: str) -> tuple[str | None, str]:
-    """De 'Restaurante McDonald's 40% de descuento...' saca
-    ('Restaurante', "McDonald's"). El comercio es todo lo que sigue a la
-    categoría hasta el primer dígito -- funciona en los tres formatos
-    reales observados (mixto, mayúscula total) porque no depende de la
-    capitalización, sólo de dónde aparece el primer número."""
+def _categoria_y_resto(cabecera: str) -> tuple[str | None, str]:
+    """Separa el prefijo de categoría (si viene) del resto de la cabecera.
+
+    Antes esto y la extracción del comercio vivían en la misma función
+    (`_categoria_y_comercio_pangui`) y el LLAMADOR volvía a cortar la
+    cabecera ORIGINAL por el largo del comercio ya encontrado -- en una
+    página con categoría (la mayoría), eso ignoraba los caracteres de la
+    categoría y el `titulo` salía corrido ("Chile 80%..." en vez de
+    "80%..."). Separarlas evita que ese bug pueda volver: el llamador ahora
+    corta siempre desde `resto`, nunca desde `cabecera`."""
     for cat in _CATEGORIAS:
         if cabecera.startswith(cat):
-            resto = cabecera[len(cat):].strip()
-            m = re.match(r"^([^\d]{1,60}?)(?=\d|$)", resto)
-            comercio = (m.group(1).strip() if m else resto[:40].strip())
-            return cat, (comercio or resto[:40].strip())
-    m = re.match(r"^([^\d]{1,60}?)(?=\d|$)", cabecera)
-    return None, (m.group(1).strip() if m else cabecera[:40].strip())
+            return cat, cabecera[len(cat):].strip()
+    return None, cabecera
+
+
+def _comercio_generico(resto: str) -> str:
+    """Todo lo que sigue hasta el primer dígito -- sirve de respaldo cuando
+    no aplica (o no calza) el patrón de página de banco. Funciona en los
+    tres formatos reales observados (mixto, mayúscula total) porque no
+    depende de la capitalización, sólo de dónde aparece el primer número."""
+    m = re.match(r"^([^\d]{1,60}?)(?=\d|$)", resto)
+    comercio = (m.group(1).strip() if m else resto[:40].strip())
+    return comercio or resto[:40].strip()
+
+
+_PCT_EN = re.compile(r"^\s*\d{1,3}\s*%\s*en\s+(.+)$", re.I)
+
+
+def _comercio_real_pagina_banco(resto: str, emisor: str) -> tuple[str, str] | None:
+    """En una página /bancos/{x}, la cabecera de CADA oferta repite el
+    nombre del banco como etiqueta antes de decir la oferta real:
+    'Banco de Chile 80% en Clínica Dental 3Dent Más de 30 años...'.
+
+    Encontrado el 26-ago-2026 al revisar por qué una pieza de Instagram
+    publicó "Banco de Chile + Banco de Chile" -- el comercio real ("Clínica
+    Dental 3Dent") nunca se leía: `_comercio_generico` paraba en el primer
+    dígito, que es el de la etiqueta repetida, no el del comercio real.
+    Verificado contra las 772 ofertas reales de /bancos/banco-de-chile: la
+    etiqueta aparece en el 100% de los casos.
+
+    Devuelve (comercio_real, resto_para_titulo), o None si `resto` no
+    calza ese patrón -- el llamador cae entonces a `_comercio_generico`,
+    nunca revienta por esto.
+    """
+    bajo = resto.lower()
+    if not bajo.startswith(emisor.strip().lower()):
+        return None
+    tras_emisor = resto[len(emisor):].strip()
+    m = _PCT_EN.match(tras_emisor)
+    if not m:
+        return None
+    despues_en = m.group(1)
+    comercio_real = _acotar_nombre_comercio(despues_en)
+    return comercio_real, despues_en
+
+
+# Aperturas típicas de la frase de marketing que sigue al nombre del
+# comercio ("Más de 30 años...", "Somos Esan...", "Ven a disfrutar...") --
+# van en mayúscula por ser inicio de oración, así que el chequeo de
+# "empieza con mayúscula" no basta para distinguirlas de un nombre propio.
+_NO_ES_NOMBRE_COMERCIO = {
+    "mas", "más", "con", "ven", "es", "somos", "en", "accede", "aprovecha",
+    "descubre", "vive", "disfruta", "obten", "obtén", "consigue", "una",
+    "un", "esta", "está", "nuestro", "nuestra", "el", "la",
+}
+_CONECTORES = ("de", "del", "la", "los", "las", "y")
+
+
+def _acotar_nombre_comercio(texto: str) -> str:
+    """Hasta 3 palabras 'reales' (mayúscula o dígito inicial, y que no sean
+    un arranque de frase de marketing conocido) más los conectores que caen
+    entre medio -- suficiente para "Clínica Dental 3Dent" o "Portal
+    Ortodoncia de Chile" sin comerse la oración que sigue. No es perfecto
+    (nombres de 4+ palabras se acortan), pero es un salto enorme respecto a
+    devolver el nombre del banco repetido."""
+    tomadas: list[str] = []
+    reales = 0
+    for palabra in texto.split():
+        limpia = palabra.strip(",;:¡!¿?")
+        if not limpia:
+            continue
+        bajo = limpia.lower()
+        es_conector = bajo in _CONECTORES
+        es_real = (limpia[0].isupper() or limpia[0].isdigit()) and bajo not in _NO_ES_NOMBRE_COMERCIO
+        if not (es_conector or es_real):
+            break
+        if es_conector and not tomadas:
+            break  # un conector no puede ser la primera palabra del nombre
+        if es_real:
+            if reales >= 3:
+                break
+            reales += 1
+        tomadas.append(limpia)
+    while tomadas and tomadas[-1].lower() in _CONECTORES:
+        tomadas.pop()
+    return " ".join(tomadas).rstrip(".") if tomadas else texto.split(".")[0][:60]
 
 
 @dataclass
@@ -246,18 +329,28 @@ def extraer_convenios(html: str, url_fuente: str, *, comercio: str | None = None
         desc = int(m.group(1))
 
         cabecera = bloque[m.end():].strip()
-        categoria, comercio_pangui = _categoria_y_comercio_pangui(cabecera)
+        categoria, resto_categoria = _categoria_y_resto(cabecera)
+
+        # Página /bancos/{x}: intenta el patrón "{emisor} {pct}% en
+        # {comercio real}" primero -- si no calza (o esto es una página
+        # /tiendas/{x}, donde `comercio` ya viene fijo y esto ni se usa),
+        # cae al heurístico genérico de siempre.
+        real = _comercio_real_pagina_banco(resto_categoria, emisor) if emisor and not comercio else None
+        if real:
+            comercio_pangui, resto_para_titulo = real
+        else:
+            comercio_pangui = _comercio_generico(resto_categoria)
+            resto_para_titulo = resto_categoria[len(comercio_pangui):].strip()
 
         dia_m = _DIA_SEMANA.search(bloque)
         canal_m = _CANAL.search(bloque)
         ver_hoy = bool(_VERIFICADO_HOY.search(bloque))
         sin_ver = _SIN_VERIFICAR.search(bloque)
 
-        # El título es lo que sigue al nombre del comercio en la cabecera,
-        # hasta el primer punto -- es la oración corta que resume la
-        # oferta ("40% de descuento en la App McDonald's...").
-        resto_cabecera = cabecera[len(comercio_pangui):].strip()
-        titulo = resto_cabecera.split(".")[0].strip()[:140] or comercio_pangui
+        # El título es lo que sigue al comercio en la cabecera, hasta el
+        # primer punto -- es la oración corta que resume la oferta
+        # ("40% de descuento en la App McDonald's...").
+        titulo = resto_para_titulo.split(".")[0].strip()[:140] or comercio_pangui
 
         salida.append(ConvenioPangui(
             emisor=emisor or _emisor_de_bloque(bloque) or "(varios)",
