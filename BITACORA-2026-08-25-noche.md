@@ -1,6 +1,6 @@
 # Bitácora — martes 25 de agosto de 2026 (tarde-noche)
 
-> Cubre los **9 commits** que van de las 14:42 a las 21:29, o sea todo lo que
+> Cubre los **10 commits** que van de las 14:42 en adelante, o sea todo lo que
 > pasó después de que cerrara
 > [BITACORA-2026-08-25-tarde.md](./BITACORA-2026-08-25-tarde.md) (que llega
 > hasta `0753174`, 13:20).
@@ -379,6 +379,43 @@ Dos copias se habrían ido separando, que es como empezó esta asimetría.
 El corte sólo aplica **cuando hay nombre**: sin nombre no se puede afirmar que
 sea ruido, y descartar por las dudas perdería fichas buenas.
 
+### Las variantes que faltaban (`34c006a`)
+
+El patrón heredado cubría "gift card", "giftcard" y "tarjeta **de** regalo".
+Probado contra cómo nombra esto el retail chileno de verdad, se colaban cuatro
+formas: `Tarjeta Regalo Jumbo` (sin el "de"), `Vale Regalo Sodimac`,
+`eGift Card Cencosud` y `e-Gift`.
+
+**Lo que NO se agregó:** `tarjeta prepago`. Una SIM prepago es un producto
+real y vendible; cortarla sería repetir el error de arriba — ampliar un filtro
+sin mirar qué más cae dentro.
+
+Los tres patrones nuevos exigen la palabra que los delata pegada al lado, así
+que los productos **de regalo que sí se venden** siguen pasando. Verificado,
+no supuesto: `Papel de Regalo`, `Bolsa de Regalo`, `Caja de Regalo`, `Set de
+Regalo`, `Moño de Regalo`, `Tarjeta Prepago Entel SIM`, `Tarjeta Madre ASUS`.
+
+---
+
+## §5 bis · Lo que se revisó y NO era un problema
+
+Está acá para que nadie lo reinvestigue. Todo medido, no supuesto.
+
+| Sospecha | Resultado |
+|---|---|
+| **tricot.cl leería siempre el mismo nodo del JSON-LD** — dos URLs del sitemap devolvían "Jeans hombre clásico" a $9.990, que es la firma exacta del bug de bata.cl del 24-ago | **Falsa alarma.** Son dos SKU distintos del mismo modelo (`-31516` y `-31539`); un tercer producto da precio y nombre distintos. El extractor está sano |
+| **falabella.com no descubriría nada** — su sitemap devolvió 0 URLs | **Artefacto de la prueba.** El árbol se recorre en anchura y un `tope` chico corta antes de llegar al nivel de las fichas. Con `tope=200` y `tope=3000` devuelve URLs normales |
+| **Héctor podría tener el defecto del reloj** (§4): un aviso cuyo histórico contradiga su propio porcentaje | **No puede.** En las dos rutas —`vigia.py:507` y `vigilante.py:1105`— `evaluar` se llama **antes** de `guardar`, así que el precio de hoy no entra en su propia referencia. El contrato del docstring se cumple en ambas |
+| **hushpuppies.cl y vans.cl medirían 0%** (`CONTEXTO.md` §9) | **Ya estaba resuelto**, ver §5 |
+| **`categorias.RUIDO` sería otra asimetría** como la de los libros y las gift cards | **No lo es.** No descarta el hallazgo: sólo impide clasificarlo en Electrónicos/Hogar, así que el aviso igual sale por Ofertas. Es otra clase de filtro |
+
+Quedó a medias un **barrido de salud de extractores** contra las 13 tiendas
+restantes del catálogo: se detuvo a propósito porque quedó colgado (muy
+probablemente en tottus, que bloquea por IP) y dejaba peticiones corriendo sin
+supervisión — la IP que se quema es la de casa (lección #6 del 20-ago). Las
+que sí alcanzó a medir están sanas: falabella, hites, spdigital, tricot, vans
+y hushpuppies. **Reintentarlo desde el runner de Actions, no desde un PC.**
+
 ---
 
 ## §6 · La foto real del producto
@@ -551,8 +588,11 @@ f85c5ef  Hector2: no publicar caidas sin respaldo propio, ni links que no abren
 ae94d1c  Hector: gift cards y entradas tampoco se avisan, y el regex deja de comerse ropa
 ec068ec  Rat.IA: la pieza de Instagram usa la foto real del producto
 0c1975c  Rat.IA: el selector de Instagram corre solo, y por defecto no publica nada
+34c006a  Gift cards: las variantes que usa el retail chileno de verdad
 ```
 
-**Suite completa: 208 pruebas en verde** (por archivo y con `discover`), más los
+(Más `9a4d89b`, esta misma bitácora.)
+
+**Suite completa: 209 pruebas en verde** (por archivo y con `discover`), más los
 11 `probar_*.py` que no salen a la red. `probar_tls.py` no se corrió: sale a
 internet contra tiendas reales.
