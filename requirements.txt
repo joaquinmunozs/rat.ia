@@ -7,3 +7,12 @@ curl_cffi>=0.7
 # telethon: cliente de USUARIO (no bot) para reenviar_ofertas.py -- lee canales
 # ajenos a los que la cuenta esta unida, cosa que un bot no puede hacer.
 telethon>=1.36
+
+# Pillow: pega la foto real del producto dentro del círculo de la pieza. La
+# foto NUNCA pasa por el modelo de imagen -- ver ratia_carrusel.py.
+Pillow>=10.0
+
+# SDK oficial de Anthropic: Haiku 4.5 acorta el nombre del producto y escribe
+# el caption (ratia_texto.py). Se usa el SDK y no urllib por sus reintentos
+# automáticos y errores tipados: esto corre solo, sin nadie mirando.
+anthropic>=0.100
