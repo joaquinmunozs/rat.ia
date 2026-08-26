@@ -35,10 +35,12 @@ QUÉ FALTA PARA QUE PUBLIQUE DE VERDAD
 ==============================================================================
   · BLOTATO_API_KEY + la cuenta de Instagram de Rat.IA conectada en Blotato.
   · KIE_API_KEY (ya la usa Bárbara; se puede reusar la misma cuenta).
-  · La foto real del producto -- hoy `foto` llega vacía porque nada en el
-    pipeline guarda la URL de imagen junto con el candidato. Se resuelve
-    bajando `og:image` de la ficha (`descubrir.bajar` + el mismo patrón que
-    ya usa `hector2_filtro.imagen_de`), pendiente de conectar acá.
+
+La foto real del producto YA está conectada (`_foto_de`, 25-ago-2026): se baja
+la ficha y se lee con `extractor.extraer`, que valida la URL además de
+encontrarla. Si la ficha no se puede bajar, el candidato se queda sin foto y
+`ratia_pieza_ia.generar_pieza` lo frena solo -- nunca se publica una pieza con
+la foto de otro producto.
 """
 from __future__ import annotations
 
@@ -51,6 +53,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import baseprecios
 import descargar_base_hector
+import descubrir
+import extractor
 import hector2_db
 import hector2_filtro
 import ratia_publicar
@@ -119,16 +123,41 @@ def una_pasada(con_precios, con_h2, confirmar=False, ahora=None, log=print):
     return resultados
 
 
-def _foto_de(c: sel.Candidato) -> str:
+def _foto_de(c: sel.Candidato, bajar_fn=None, extraer_fn=None) -> str:
     """La URL de la foto real del producto, para pegarla en la pieza.
 
-    (Claude, 25-ago-2026) TODAVÍA NO HAY UNA FUENTE CONECTADA -- ni `alertas`
-    ni `anuncios` guardan la imagen junto con el candidato. Se puede resolver
-    bajando la ficha (`descubrir.bajar(c.url)`) y leyendo `og:image`, mismo
-    patrón que ya prueba `test_hector2_aviso` para los reenvíos del aliado.
-    Queda explícito como pendiente en vez de hacerlo a medias: sin foto real,
-    `ratia_pieza_ia.generar_pieza` ya se niega sola a inventar una."""
-    return ""
+    (Claude, 25-ago-2026) Ni `alertas` ni `anuncios` guardan la imagen junto
+    al candidato, así que se baja la ficha y se lee de ahí.
+
+    NO se busca `og:image` a mano: `extractor.extraer` ya lo hace y además
+    valida el resultado. Esa validación no es de adorno -- spdigital.cl
+    publica de verdad `<meta property="og:image" content="https:undefined">`,
+    que tiene forma de URL y host inexistente. Leído a mano se guarda como si
+    fuera una foto y el carrusel falla recién al publicar, cuando Instagram
+    no puede bajarla.
+
+    Devuelve "" ante cualquier problema, y esa es la respuesta correcta: sin
+    foto real `ratia_pieza_ia.generar_pieza` se niega sola a inventar una, que
+    es justo lo que tiene que pasar. Una pieza de Instagram con la foto de
+    otro producto es peor que no publicar.
+
+    `bajar_fn`/`extraer_fn` son inyectables para poder probar esto sin red,
+    igual que `hector2_filtro.verificar_en_vivo`.
+    """
+    if not getattr(c, "url", ""):
+        return ""
+    bajar_fn = bajar_fn or descubrir.bajar
+    extraer_fn = extraer_fn or extractor.extraer
+    try:
+        html = bajar_fn(c.url)
+        if not html:
+            return ""
+        return (extraer_fn(html, c.url) or {}).get("imagen") or ""
+    except Exception:
+        # Una ficha que no se puede bajar no puede tumbar la pasada entera:
+        # el resto de los candidatos sigue. El que se queda sin foto se frena
+        # solo, más abajo, en `generar_pieza`.
+        return ""
 
 
 def main():
